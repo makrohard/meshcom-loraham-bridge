@@ -65,6 +65,27 @@ uint8_t tx_outcome_to_wire(TxOutcome o) {
 
 }  // namespace
 
+const char* close_reason_name(CloseReason r) {
+    switch (r) {
+        case CloseReason::None:             return "none";
+        case CloseReason::OutputOverflow:   return "output-overflow";
+        case CloseReason::MalformedFrame:   return "malformed-frame";
+        case CloseReason::ParserError:      return "parser-error";
+        case CloseReason::BadState:         return "bad-state";
+        case CloseReason::RemoteError:      return "remote-error";
+        case CloseReason::AuthFailed:       return "auth-failed";
+        case CloseReason::AuthError:        return "auth-error";
+        case CloseReason::ConfigFailed:     return "config-failed";
+        case CloseReason::BackendFailure:   return "backend-failure";
+        case CloseReason::HandshakeTimeout: return "handshake-timeout";
+        case CloseReason::AuthTimeout:      return "auth-timeout";
+        case CloseReason::ConfigTimeout:    return "config-timeout";
+        case CloseReason::PongTimeout:      return "pong-timeout";
+        case CloseReason::InternalError:    return "internal-error";
+    }
+    return "unknown";
+}
+
 XrSession::Timeouts XrSession::default_timeouts() {
     return Timeouts{
         /*handshake_ms*/ 5000,

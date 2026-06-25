@@ -12,6 +12,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <cstdio>
 #include <cstring>
 
 namespace mebridge {
@@ -91,11 +92,21 @@ void XrServer::try_accept() {
         if (!set_nonblocking(cfd)) { ::close(cfd); continue; }
         conn_ = std::make_unique<XrConnection>(cfd, backend_, auth_, clock_, to_,
                                                max_outbox_);
+        std::fprintf(stderr, "[bridge] XR client connected\n");
     }
 }
 
 void XrServer::drop_connection_if_finished() {
-    if (conn_ && conn_->finished()) conn_.reset();
+    if (!conn_ || !conn_->finished()) return;
+    // A session we closed carries a diagnostic reason; otherwise the peer closed.
+    const XrSession& s = conn_->session();
+    if (s.closed()) {
+        std::fprintf(stderr, "[bridge] XR client disconnected: %s\n",
+                     close_reason_name(s.close_reason()));
+    } else {
+        std::fprintf(stderr, "[bridge] XR client disconnected: peer closed\n");
+    }
+    conn_.reset();
 }
 
 void XrServer::poll_once(int timeout_ms) {

@@ -56,7 +56,6 @@ private:
     bool tx_in_flight_ = false;
 
     loraham::Parser parser_{};
-    extradio::RadioConfig effective_{};
     uint8_t rbuf_[kReadChunk];
 };
 

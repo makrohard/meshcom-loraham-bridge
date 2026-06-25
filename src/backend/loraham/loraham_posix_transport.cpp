@@ -33,6 +33,10 @@ PosixDaemonTransport::PosixDaemonTransport(DaemonPaths paths)
 PosixDaemonTransport::~PosixDaemonTransport() { close(); }
 
 namespace {
+// Upper bound for a single blocking send to the local daemon. Bounds the event
+// loop against an unresponsive daemon rather than blocking indefinitely.
+constexpr int kSendTimeoutMs = 2000;
+
 bool set_nonblocking(int fd) {
     int fl = ::fcntl(fd, F_GETFL, 0);
     if (fl < 0) return false;
@@ -64,6 +68,16 @@ bool PosixDaemonTransport::send_all(int fd, const uint8_t* data, size_t len) {
         ssize_t w = ::send(fd, data + off, len - off, MSG_NOSIGNAL);
         if (w > 0) { off += static_cast<size_t>(w); continue; }
         if (w < 0 && errno == EINTR) continue;
+        if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            // Sockets are non-blocking; wait (bounded) for room rather than
+            // failing a send on a momentarily full kernel buffer.
+            struct pollfd pfd;
+            pfd.fd = fd;
+            pfd.events = POLLOUT;
+            pfd.revents = 0;
+            if (::poll(&pfd, 1, kSendTimeoutMs) <= 0) return false;  // timeout/error
+            continue;
+        }
         return false;
     }
     return true;
@@ -79,8 +93,13 @@ bool PosixDaemonTransport::connect(Band band) {
     int cfd = unix_connect(cpath);
     if (cfd < 0) { ::close(dfd); return false; }
 
-    // DATA is polled non-blocking; CONF stays blocking and is read via poll().
-    if (!set_nonblocking(dfd)) { ::close(dfd); ::close(cfd); return false; }
+    // Both sockets are non-blocking: DATA is polled in poll(); CONF reads/sends
+    // are bounded via poll() so an unresponsive daemon cannot stall the bridge.
+    if (!set_nonblocking(dfd) || !set_nonblocking(cfd)) {
+        ::close(dfd);
+        ::close(cfd);
+        return false;
+    }
 
     data_fd_ = dfd;
     conf_fd_ = cfd;
@@ -115,7 +134,8 @@ bool PosixDaemonTransport::conf_read_line(std::string& out, uint32_t timeout_ms)
         char buf[256];
         ssize_t r = ::recv(conf_fd_, buf, sizeof(buf), 0);
         if (r > 0) { conf_linebuf_.append(buf, static_cast<size_t>(r)); continue; }
-        if (r < 0 && errno == EINTR) continue;
+        if (r < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK))
+            continue;  // non-blocking socket: re-poll
         return false;  // closed or error
     }
 }

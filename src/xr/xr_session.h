@@ -61,6 +61,9 @@ enum class CloseReason : uint8_t {
     InternalError,      // encode failure (should not happen)
 };
 
+// Human-readable name for a CloseReason (diagnostics/logging only).
+const char* close_reason_name(CloseReason r);
+
 class XrSession final : public BackendSink {
 public:
     struct Timeouts {

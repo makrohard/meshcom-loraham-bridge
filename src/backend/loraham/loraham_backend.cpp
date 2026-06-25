@@ -4,6 +4,7 @@
 
 #include "backend/loraham/loraham_backend.h"
 
+#include <cstdio>
 #include <cstring>
 
 #include "backend/loraham/loraham_config.h"
@@ -20,10 +21,17 @@ ConfigureResult LorahamBackend::configure(const extradio::RadioConfig& requested
     ConfigureResult res;  // applied=false by default
 
     Band band;
-    if (validate_config(requested, &band) != ConfigError::Ok) return res;
+    ConfigError err = validate_config(requested, &band);
+    if (err != ConfigError::Ok) {
+        std::fprintf(stderr, "[loraham] config rejected: %s\n", config_error_name(err));
+        return res;
+    }
 
     // (Re)connect the band's sockets for this configuration.
-    if (!transport_.connect(band)) return res;
+    if (!transport_.connect(band)) {
+        std::fprintf(stderr, "[loraham] cannot connect to daemon sockets\n");
+        return res;
+    }
     parser_reset(parser_);
     tx_in_flight_ = false;
     configured_ = false;
@@ -37,6 +45,7 @@ ConfigureResult LorahamBackend::configure(const extradio::RadioConfig& requested
         !build_set_command(requested, &set_cmd) ||
         !send_line(set_cmd) ||
         !send_line("GET STATUS\n")) {
+        std::fprintf(stderr, "[loraham] failed to send configuration to daemon\n");
         transport_.close();
         return res;
     }
@@ -46,12 +55,12 @@ ConfigureResult LorahamBackend::configure(const extradio::RadioConfig& requested
     std::string status;
     if (!transport_.conf_read_line(status, config_timeout_ms_) ||
         !status_line_radio_ready(status)) {
+        std::fprintf(stderr, "[loraham] daemon radio not ready after configure\n");
         transport_.close();
         return res;
     }
 
     configured_ = true;
-    effective_ = requested;
     res.applied = true;
     res.effective = requested;  // bridge is the authority; echo the requested config
     return res;
@@ -117,6 +126,7 @@ void LorahamBackend::handle_disconnect() {
     configured_ = false;
     tx_in_flight_ = false;
     parser_reset(parser_);
+    std::fprintf(stderr, "[loraham] daemon link lost\n");
     if (sink_) sink_->on_backend_failure();
 }
 
