@@ -1,42 +1,46 @@
-# meshcom-extradio-bridge
+# meshcom-loraham-bridge
 
-A small Raspberry-Pi bridge that lets MeshCom firmware use a remote radio over
-the **XR external-radio TCP protocol v1**. The firmware is the TCP **client**;
-this bridge is the **server**. It is one process with one event loop and one
-active firmware client at a time.
+A small Raspberry-Pi bridge that lets MeshCom firmware use a LoRaHAM Pi-HAT radio
+(driven by the LoRaHAM daemon) over the **XR external-radio TCP protocol v1**. The
+firmware is the TCP **client**; this bridge is the **server**. It is one process
+with one event loop and one active firmware client at a time.
 
 ```text
 MeshCom firmware (ESP32, or later ESP32/QEMU)
         |
         |  XR external-radio TCP protocol v1   (firmware = client, bridge = server)
         v
-meshcom-extradio-bridge   (this repository, one process)
+meshcom-loraham-bridge   (this repository, one process)
   ├─ generic XR TCP server / session / authentication
   ├─ generic RadioBackend interface
-  ├─ FakeBackend (host tests + runnable default)   <-- the only backend in this milestone
-  └─ future LoRaHAM daemon adapter module          <-- deferred (see below)
+  ├─ FakeBackend (host tests + runnable default)
+  └─ LoRaHAM daemon adapter module (in development)
         |
+        | local-only daemon sockets (Unix)
         v
-LoRaHAM daemon  ->  LoRaHAM Pi-HAT radio
+LoRaHAM daemon v111  ->  LoRaHAM Pi-HAT radio
 ```
 
 The future daemon adapter is a **module in this same executable**, not a separate
 helper process.
 
-## Status (milestone M11b)
+## Status
 
-Implemented: the generic XR server, the server-side session state machine,
-optional one-way HMAC authentication, a generic `RadioBackend` interface, a
-deterministic `FakeBackend`, bounded I/O, and keepalive — all host-tested.
+Implemented and host-tested: the generic XR server, the server-side session
+state machine, optional one-way HMAC authentication, a generic `RadioBackend`
+interface, a deterministic `FakeBackend`, bounded I/O, and keepalive.
 
-**The LoRaHAM daemon adapter is intentionally deferred.** The daemon's `CONF`
-`SET` path currently provides no stable acknowledgement and its status does not
-read back every XR `RadioConfig` field, so a real adapter cannot yet prove that a
-requested configuration was applied exactly. This bridge never reports a
-`CONFIG_RESULT` success unless the backend confirms it applied the exact
-effective configuration; until the daemon can confirm-and-read-back a full
-configuration, only the `FakeBackend` satisfies that contract. Adding that
-daemon capability is the next milestone (M12a).
+In development: the **LoRaHAM daemon adapter** — a `RadioBackend` that speaks the
+LoRaHAM daemon v111 local Unix sockets (framed DATA for RX/TX, CONF text for
+configuration). The daemon runs **unchanged**.
+
+Configuration model: the bridge is the XR configuration authority. It validates a
+requested `RadioConfig` against the daemon's known LoRa limits, applies it via the
+daemon `CONF` socket, confirms the radio is healthy, and echoes the requested
+values as the effective configuration. Because daemon v111's `CONF SET` has no
+per-field acknowledgement, a `CONFIG_RESULT` success means "configuration was
+valid, sent, and the radio reports ready" — not a per-register read-back. This is
+a deliberate, documented trade-off that keeps the daemon untouched.
 
 ## Build
 
@@ -52,9 +56,9 @@ ctest --test-dir build --output-on-failure
 ## Run
 
 ```bash
-./build/meshcom-extradio-bridge --bind 127.0.0.1 --port 7000
+./build/meshcom-loraham-bridge --bind 127.0.0.1 --port 7000
 # optional one-way authentication using a password file:
-./build/meshcom-extradio-bridge --port 7000 --password-file /path/to/secret
+./build/meshcom-loraham-bridge --port 7000 --password-file /path/to/secret
 ```
 
 With the `FakeBackend` a connecting firmware completes the handshake, reaches the

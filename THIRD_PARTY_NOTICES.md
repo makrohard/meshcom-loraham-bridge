@@ -26,12 +26,12 @@ bridge speaks exactly the same wire protocol the firmware was tested against.
 
 ### Authorship and license
 
-These files are the **original work of the bridge author** (`makrohard
-<410733@gmail.com>`). Verified from the source repository: every commit touching
-`lib/external_radio_protocol/` and every line of both files is authored by
-`makrohard` — there are no other contributors and no inherited lines from the
-upstream icssw-org MeshCom-Firmware tree (the files were added new and include
-only standard C++ headers).
+These files are the **original work of the bridge author, Johannes Loose**
+(git author handle `makrohard <410733@gmail.com>`). Verified from the source
+repository: every commit touching `lib/external_radio_protocol/` and every line
+of both files is authored by `makrohard` — there are no other contributors and no
+inherited lines from the upstream icssw-org MeshCom-Firmware tree (the files were
+added new and include only standard C++ headers).
 
 In MeshCom-Firmware these files were published with `"license":
 "GPL-3.0-or-later"` (in their `library.json`). As the sole copyright holder, the
