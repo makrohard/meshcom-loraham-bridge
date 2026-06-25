@@ -1,4 +1,4 @@
-// main.cpp — meshcom-extradio-bridge entry point (M11b).
+// main.cpp — meshcom-loraham-bridge entry point.
 //
 // One process, one event loop, one active firmware client. In this milestone the
 // only radio backend is the deterministic FakeBackend, so a connected firmware
@@ -16,10 +16,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 
 #include "auth/hmac_auth.h"
 #include "backend/fake_backend.h"
+#include "backend/loraham/loraham_backend.h"
+#include "backend/loraham/loraham_posix_transport.h"
 #include "util/clock.h"
 #include "xr/xr_server.h"
 
@@ -32,11 +35,13 @@ constexpr size_t kDefaultMaxOutbox = 64 * 1024;  // bounded per-client output
 
 void usage(const char* argv0) {
     std::fprintf(stderr,
-        "Usage: %s [--bind ADDR] [--port N] [--password-file PATH]\n"
+        "Usage: %s [--bind ADDR] [--port N] [--password-file PATH] [--backend NAME]\n"
         "  --bind ADDR           bind address (default 127.0.0.1)\n"
         "  --port N              TCP port (default 7000; 0 = ephemeral)\n"
         "  --password-file PATH  enable one-way HMAC auth using the file contents\n"
-        "                        as the password (passwords are never taken on argv)\n",
+        "                        as the password (passwords are never taken on argv)\n"
+        "  --backend NAME        radio backend: 'fake' (default) or 'loraham'\n"
+        "                        (loraham connects to the local LoRaHAM daemon sockets)\n",
         argv0);
 }
 
@@ -48,6 +53,7 @@ int main(int argc, char** argv) {
     std::string bind_addr = "127.0.0.1";
     uint16_t port = 7000;
     std::string password_file;
+    std::string backend_name = "fake";
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -64,6 +70,8 @@ int main(int argc, char** argv) {
             port = static_cast<uint16_t>(std::strtoul(next("--port"), nullptr, 10));
         } else if (a == "--password-file") {
             password_file = next("--password-file");
+        } else if (a == "--backend") {
+            backend_name = next("--backend");
         } else if (a == "-h" || a == "--help") {
             usage(argv[0]);
             return 0;
@@ -87,9 +95,22 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, on_signal);
     std::signal(SIGPIPE, SIG_IGN);
 
+    // Select the radio backend. The LoRaHAM transport must outlive the backend.
     SteadyClock clock;
-    FakeBackend backend;
-    XrServer server(backend, std::move(auth), clock, XrSession::default_timeouts(),
+    std::unique_ptr<loraham::PosixDaemonTransport> loraham_transport;
+    std::unique_ptr<RadioBackend> backend;
+    if (backend_name == "fake") {
+        backend = std::make_unique<FakeBackend>();
+    } else if (backend_name == "loraham") {
+        loraham_transport = std::make_unique<loraham::PosixDaemonTransport>();
+        backend = std::make_unique<LorahamBackend>(*loraham_transport);
+    } else {
+        std::fprintf(stderr, "error: unknown backend '%s' (use 'fake' or 'loraham')\n",
+                     backend_name.c_str());
+        return 2;
+    }
+
+    XrServer server(*backend, std::move(auth), clock, XrSession::default_timeouts(),
                     kDefaultMaxOutbox);
 
     std::string err;
@@ -99,11 +120,11 @@ int main(int argc, char** argv) {
     }
 
     std::fprintf(stderr,
-        "meshcom-extradio-bridge: listening on %s:%u, auth=%s, backend=fake\n",
+        "meshcom-loraham-bridge: listening on %s:%u, auth=%s, backend=%s\n",
         bind_addr.c_str(), static_cast<unsigned>(server.bound_port()),
-        password_file.empty() ? "open" : "password");
+        password_file.empty() ? "open" : "password", backend_name.c_str());
 
     server.run(g_stop);
-    std::fprintf(stderr, "meshcom-extradio-bridge: shutting down\n");
+    std::fprintf(stderr, "meshcom-loraham-bridge: shutting down\n");
     return 0;
 }

@@ -1,9 +1,9 @@
-# meshcom-extradio-bridge — CMake build (M11b).
+# meshcom-loraham-bridge — CMake build.
 #
 # SPDX-License-Identifier: MIT
 
 cmake_minimum_required(VERSION 3.16)
-project(meshcom_extradio_bridge LANGUAGES CXX)
+project(meshcom_loraham_bridge LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -27,14 +27,18 @@ target_include_directories(external_radio_protocol PUBLIC
 add_library(bridge_core STATIC
   src/auth/hmac_auth.cpp
   src/backend/fake_backend.cpp
+  src/backend/loraham/loraham_config.cpp
+  src/backend/loraham/loraham_framing.cpp
+  src/backend/loraham/loraham_posix_transport.cpp
+  src/backend/loraham/loraham_backend.cpp
   src/xr/xr_session.cpp
   src/xr/xr_connection.cpp
   src/xr/xr_server.cpp)
 target_include_directories(bridge_core PUBLIC src)
 target_link_libraries(bridge_core PUBLIC external_radio_protocol OpenSSL::Crypto)
 
-add_executable(meshcom-extradio-bridge src/main.cpp)
-target_link_libraries(meshcom-extradio-bridge PRIVATE bridge_core)
+add_executable(meshcom-loraham-bridge src/main.cpp)
+target_link_libraries(meshcom-loraham-bridge PRIVATE bridge_core)
 
 # --- tests -----------------------------------------------------------------
 enable_testing()
@@ -49,3 +53,6 @@ endfunction()
 add_bridge_test(test_protocol_server)
 add_bridge_test(test_xr_session)
 add_bridge_test(test_fake_backend)
+add_bridge_test(test_loraham_config)
+add_bridge_test(test_loraham_framing)
+add_bridge_test(test_loraham_backend)
