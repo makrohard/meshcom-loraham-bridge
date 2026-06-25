@@ -26,6 +26,10 @@
 #include "util/clock.h"
 #include "xr/xr_server.h"
 
+#ifndef MEBRIDGE_VERSION
+#define MEBRIDGE_VERSION "0.0.0-dev"  // overridden by the build (see CMakeLists.txt)
+#endif
+
 namespace {
 
 std::atomic<bool> g_stop{false};
@@ -41,7 +45,8 @@ void usage(const char* argv0) {
         "  --password-file PATH  enable one-way HMAC auth using the file contents\n"
         "                        as the password (passwords are never taken on argv)\n"
         "  --backend NAME        radio backend: 'fake' (default) or 'loraham'\n"
-        "                        (loraham connects to the local LoRaHAM daemon sockets)\n",
+        "                        (loraham connects to the local LoRaHAM daemon sockets)\n"
+        "  -v, --version         print version and exit\n",
         argv0);
 }
 
@@ -72,6 +77,9 @@ int main(int argc, char** argv) {
             password_file = next("--password-file");
         } else if (a == "--backend") {
             backend_name = next("--backend");
+        } else if (a == "-v" || a == "--version") {
+            std::printf("meshcom-loraham-bridge %s\n", MEBRIDGE_VERSION);
+            return 0;
         } else if (a == "-h" || a == "--help") {
             usage(argv[0]);
             return 0;

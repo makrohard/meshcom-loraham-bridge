@@ -14,25 +14,38 @@ meshcom-loraham-bridge   (this repository, one process)
   ├─ generic XR TCP server / session / authentication
   ├─ generic RadioBackend interface
   ├─ FakeBackend (host tests + runnable default)
-  └─ LoRaHAM daemon adapter module (in development)
+  └─ LoRaHAM daemon adapter (configure + RX/TX over the daemon's Unix sockets)
         |
         | local-only daemon sockets (Unix)
         v
 LoRaHAM daemon v111  ->  LoRaHAM Pi-HAT radio
 ```
 
-The future daemon adapter is a **module in this same executable**, not a separate
-helper process.
+The LoRaHAM daemon adapter is a **module in this same executable**, not a
+separate helper process.
+
+## Protocol
+
+The XR external-radio TCP protocol v1 — framing, handshake, optional auth, the
+normalized `RadioConfig`, and RX/TX semantics — is specified in the MeshCom
+firmware repository at `docs/external-radio-protocol.md`. Its hardware- and
+transport-independent codec is vendored here under
+`third_party/external_radio_protocol/` (see `THIRD_PARTY_NOTICES.md`).
 
 ## Status
 
-Implemented and host-tested: the generic XR server, the server-side session
-state machine, optional one-way HMAC authentication, a generic `RadioBackend`
-interface, a deterministic `FakeBackend`, bounded I/O, and keepalive.
+The generic XR bridge core and the LoRaHAM daemon adapter are implemented and
+host-tested with CTest (no hardware required). The LoRaHAM path has additionally
+been validated on real hardware against the MeshCom 433 profile (433.175 MHz /
+SF11 / BW250 / CR4-6 / sync 0x2B): configuration, transmit, and receive of live
+MeshCom packets, including an on-air reply.
 
-In development: the **LoRaHAM daemon adapter** — a `RadioBackend` that speaks the
-LoRaHAM daemon v111 local Unix sockets (framed DATA for RX/TX, CONF text for
-configuration). The daemon runs **unchanged**.
+Backends (`--backend`):
+
+- `fake` (default) — a deterministic in-memory `RadioBackend` for tests and dry
+  runs; no RF, no daemon I/O.
+- `loraham` — speaks the LoRaHAM daemon v111 local Unix sockets (framed DATA for
+  RX/TX, CONF text for configuration). The daemon runs **unchanged**.
 
 Configuration model: the bridge is the XR configuration authority. It validates a
 requested `RadioConfig` against the daemon's known LoRa limits, applies it via the
@@ -61,9 +74,22 @@ ctest --test-dir build --output-on-failure
 ./build/meshcom-loraham-bridge --port 7000 --password-file /path/to/secret
 ```
 
-With the `FakeBackend` a connecting firmware completes the handshake, reaches the
-operational state (the fake applies the exact requested configuration), and is
-kept alive with PING/PONG. The fake performs no RF and no daemon I/O.
+With the default `FakeBackend` a connecting firmware completes the handshake,
+reaches the operational state (the fake applies the exact requested
+configuration), and is kept alive with PING/PONG. The fake performs no RF and no
+daemon I/O.
+
+### With the LoRaHAM daemon (real radio)
+
+Start the LoRaHAM daemon (v111) first so its sockets exist, then:
+
+```bash
+./build/meshcom-loraham-bridge --port 7000 --backend loraham
+```
+
+The band (433/868) is selected automatically from the frequency the firmware
+requests. Note: the daemon caps TX power at 0–20 dBm, so a requested power above
+20 dBm is rejected — keep the firmware's configured power ≤ 20 dBm.
 
 ## Security defaults
 
@@ -89,9 +115,11 @@ unverified "daemon SET succeeded" path.
 
 ```text
 src/
-  main.cpp              CLI + event loop wiring
+  main.cpp              CLI + backend selection + event loop wiring
   xr/                   XR server, session FSM, connection
   backend/              RadioBackend interface + FakeBackend
+  backend/loraham/      LoRaHAM daemon adapter: config translate, framing,
+                        POSIX transport, backend
   auth/                 HMAC-SHA256 one-way auth (OpenSSL libcrypto)
   util/                 injectable clock, bounded byte buffer
 third_party/

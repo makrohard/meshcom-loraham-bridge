@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 cmake_minimum_required(VERSION 3.16)
-project(meshcom_loraham_bridge LANGUAGES CXX)
+project(meshcom_loraham_bridge VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -39,6 +39,8 @@ target_link_libraries(bridge_core PUBLIC external_radio_protocol OpenSSL::Crypto
 
 add_executable(meshcom-loraham-bridge src/main.cpp)
 target_link_libraries(meshcom-loraham-bridge PRIVATE bridge_core)
+target_compile_definitions(meshcom-loraham-bridge PRIVATE
+  MEBRIDGE_VERSION="${PROJECT_VERSION}")
 
 # --- tests -----------------------------------------------------------------
 enable_testing()
@@ -56,3 +58,4 @@ add_bridge_test(test_fake_backend)
 add_bridge_test(test_loraham_config)
 add_bridge_test(test_loraham_framing)
 add_bridge_test(test_loraham_backend)
+add_bridge_test(test_loraham_posix_transport)
