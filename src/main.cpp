@@ -1,0 +1,109 @@
+// main.cpp — meshcom-extradio-bridge entry point (M11b).
+//
+// One process, one event loop, one active firmware client. In this milestone the
+// only radio backend is the deterministic FakeBackend, so a connected firmware
+// completes HELLO/AUTH/CONFIGURE and reaches READY (the fake applies the exact
+// requested config) and is kept alive with PING/PONG. A real LoRaHAM-daemon
+// adapter is a future module in this same process (see README).
+//
+// Security defaults: bind 127.0.0.1; open auth unless --password-file is given.
+// Passwords are NEVER accepted on the command line.
+//
+// SPDX-License-Identifier: MIT
+
+#include <atomic>
+#include <csignal>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+
+#include "auth/hmac_auth.h"
+#include "backend/fake_backend.h"
+#include "util/clock.h"
+#include "xr/xr_server.h"
+
+namespace {
+
+std::atomic<bool> g_stop{false};
+void on_signal(int) { g_stop.store(true); }
+
+constexpr size_t kDefaultMaxOutbox = 64 * 1024;  // bounded per-client output
+
+void usage(const char* argv0) {
+    std::fprintf(stderr,
+        "Usage: %s [--bind ADDR] [--port N] [--password-file PATH]\n"
+        "  --bind ADDR           bind address (default 127.0.0.1)\n"
+        "  --port N              TCP port (default 7000; 0 = ephemeral)\n"
+        "  --password-file PATH  enable one-way HMAC auth using the file contents\n"
+        "                        as the password (passwords are never taken on argv)\n",
+        argv0);
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    using namespace mebridge;
+
+    std::string bind_addr = "127.0.0.1";
+    uint16_t port = 7000;
+    std::string password_file;
+
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        auto next = [&](const char* name) -> const char* {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "error: %s requires a value\n", name);
+                std::exit(2);
+            }
+            return argv[++i];
+        };
+        if (a == "--bind") {
+            bind_addr = next("--bind");
+        } else if (a == "--port") {
+            port = static_cast<uint16_t>(std::strtoul(next("--port"), nullptr, 10));
+        } else if (a == "--password-file") {
+            password_file = next("--password-file");
+        } else if (a == "-h" || a == "--help") {
+            usage(argv[0]);
+            return 0;
+        } else {
+            std::fprintf(stderr, "error: unknown argument '%s'\n", a.c_str());
+            usage(argv[0]);
+            return 2;
+        }
+    }
+
+    AuthConfig auth;  // open mode by default
+    if (!password_file.empty()) {
+        std::string err;
+        if (!AuthConfig::from_password_file(password_file, auth, err)) {
+            std::fprintf(stderr, "error: %s\n", err.c_str());  // never prints content
+            return 1;
+        }
+    }
+
+    std::signal(SIGINT, on_signal);
+    std::signal(SIGTERM, on_signal);
+    std::signal(SIGPIPE, SIG_IGN);
+
+    SteadyClock clock;
+    FakeBackend backend;
+    XrServer server(backend, std::move(auth), clock, XrSession::default_timeouts(),
+                    kDefaultMaxOutbox);
+
+    std::string err;
+    if (!server.listen(bind_addr, port, err)) {
+        std::fprintf(stderr, "error: listen failed: %s\n", err.c_str());
+        return 1;
+    }
+
+    std::fprintf(stderr,
+        "meshcom-extradio-bridge: listening on %s:%u, auth=%s, backend=fake\n",
+        bind_addr.c_str(), static_cast<unsigned>(server.bound_port()),
+        password_file.empty() ? "open" : "password");
+
+    server.run(g_stop);
+    std::fprintf(stderr, "meshcom-extradio-bridge: shutting down\n");
+    return 0;
+}
