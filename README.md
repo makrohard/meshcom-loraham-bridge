@@ -38,7 +38,11 @@ The generic XR bridge core and the LoRaHAM daemon adapter are implemented and
 host-tested with CTest (no hardware required). The LoRaHAM path has additionally
 been validated on real hardware against the MeshCom 433 profile (433.175 MHz /
 SF11 / BW250 / CR4-6 / sync 0x2B): configuration, transmit, and receive of live
-MeshCom packets, including an on-air reply.
+MeshCom packets, including an on-air reply. The **real MeshCom `EXTERNAL_RADIO`
+firmware** has also been run against this bridge under the Espressif ESP32 QEMU
+(via the `meshcom-qemu-raspi` overlay): the native firmware obtains an IP, connects
+over the XR protocol with HMAC, configures the exact MeshCom 433 profile
+(control-plane), and receives live T-Deck packets through native MeshCom ingress.
 
 Backends (`--backend`):
 
@@ -93,6 +97,44 @@ XR side or its daemon link:
 A bounded drain deadline elapsing without a result also faults, rather than risk a
 duplicate transmission. By contrast, a still-incomplete (bridge-owned, *TxWriting*)
 frame that fails is a clean reset — the daemon never received a complete packet.
+
+## Payload neutrality and evidence levels
+
+The bridge is **byte-transparent and payload-neutral**: it carries opaque RF
+payloads between the XR client and the daemon and adds no MeshCom text framing,
+callsign handling, MESH bits, or ACK logic. Application framing (and its on-air
+acceptance by a peer) is entirely the firmware's concern.
+
+These are **distinct, non-substitutable evidence levels** — none implies another:
+
+- **daemon `TX_RESULT=OK`** — the daemon reports the RF send completed.
+- **peer receipt** — independent on-air evidence that a peer decoded the frame.
+- **MeshCom ACK / reply** — stronger end-to-end application-delivery evidence.
+
+A `CONFIG_RESULT` success is **control-plane readiness only** (validated + submitted
++ daemon radio-ready), never RF attestation.
+
+`CHANNEL_BUSY` is **opportunistic** in the daemon's managed-CAD mode: managed TX
+waits out short channel activity and then transmits (returning success), so
+`CHANNEL_BUSY` only surfaces if the channel stays busy past the CAD-wait timeout.
+It must not be forced with a continuous transmitter.
+
+## Safe recovery after an uncertain pending TX
+
+Because a fully written, daemon-owned TX can still transmit after the bridge (or
+its XR client) disappears — proven on hardware — a bridge-process exit during a
+possibly-pending TX is **not automatically safe**. If the bridge may have died
+while a daemon-owned TX was pending, recover deterministically:
+
+1. Do **not** immediately restart the bridge and transmit again.
+2. Stop the daemon gracefully and wait for a clean exit.
+3. Restart the daemon.
+4. Restart the bridge.
+5. Establish a fresh firmware configuration.
+6. Resume TX only after the normal ready state is observed.
+
+The bridge intentionally has **no** automatic bridge restart and never infers TX
+cancellation from a disconnect.
 
 ## Build
 

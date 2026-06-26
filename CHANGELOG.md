@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Documentation
+- Record native validation of the real MeshCom `EXTERNAL_RADIO` firmware against
+  this bridge under the Espressif ESP32 QEMU (connect + HMAC + control-plane
+  configuration + live RX through native MeshCom ingress). Document payload
+  neutrality, the three non-substitutable evidence levels (daemon `TX_RESULT` vs
+  peer receipt vs MeshCom ACK), that `CHANNEL_BUSY` is opportunistic under managed
+  CAD, and the safe bridge-process recovery rule after an uncertain pending TX (no
+  automatic restart; daemon-owned TX may still transmit after the bridge exits).
+
 ### Fixed
 - Preserve uncertain TX ownership across every teardown path. Previously only the
   bridge-side TX deadline entered draining; two paths lost ownership tracking while
