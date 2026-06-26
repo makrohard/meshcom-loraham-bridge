@@ -180,13 +180,19 @@ bool LorahamBackend::submit_tx(const uint8_t* data, size_t len) {
 }
 
 void LorahamBackend::abandon_pending_tx() {
+    // Called when the XR side gives up ownership of an in-flight TX: either the
+    // bridge-side TX deadline expired, or the XR session/connection is being torn
+    // down (peer disconnect, session-owned close, etc.). Idempotent; a no-op
+    // unless the backend currently owns a TX.
     if (state_ == State::TxPending) {
-        // Daemon owns the frame; it may still queue or transmit it. Drain.
+        // A complete frame was written; the daemon owns it and may still queue or
+        // transmit it. Keep the daemon link open and drain the final result; do
+        // not fabricate a terminal TX_RESULT.
         state_ = State::Draining;
         drain_deadline_at_ = clock_.now_ms() + drain_timeout_ms_;
         std::fprintf(stderr,
-            "[loraham] XR TX deadline reached with daemon result outstanding "
-            "-> draining (ownership retained, no TIMEOUT fabricated)\n");
+            "[loraham] XR abandoned a daemon-owned TX "
+            "-> draining (ownership retained, no result fabricated)\n");
         return;
     }
     if (state_ == State::TxWriting) {
@@ -194,12 +200,12 @@ void LorahamBackend::abandon_pending_tx() {
         // transmit it. Discard and reset the link (conservative; not draining,
         // because the daemon never took ownership of a complete frame).
         std::fprintf(stderr,
-            "[loraham] XR TX deadline during write: incomplete frame discarded "
-            "(daemon never received a complete packet); resetting daemon link\n");
+            "[loraham] XR abandoned a partially-written TX: incomplete frame "
+            "discarded (daemon never received a complete packet); resetting link\n");
         reset_link_unconfigured();
         return;
     }
-    // Nothing in flight: no-op.
+    // Ready / Configuring / Connecting / Draining / Faulted: no-op.
 }
 
 // --- operational + recovery ------------------------------------------------
@@ -394,10 +400,23 @@ void LorahamBackend::handle_disconnect() {
         enter_fault("daemon link lost during drain (cannot prove TX clearance)");
         return;
     }
-    const bool was_tx = (state_ == State::TxPending || state_ == State::TxWriting);
+    if (state_ == State::TxPending) {
+        // A complete TX_PACKET was already written: the daemon owns it and may
+        // still transmit it after this link drops. We cannot prove clearance and
+        // daemon v111 offers no post-disconnect result recovery, so the backend
+        // becomes Faulted (TX disabled until restart) instead of resetting to a
+        // reusable Disconnected. The active session is told the TX is uncertain.
+        enter_fault("daemon link lost with a daemon-owned TX outstanding "
+                    "(cannot prove TX clearance)");
+        if (sink_) sink_->on_backend_failure();
+        return;
+    }
+    // TxWriting (an incomplete frame, still bridge-owned -> daemon never received
+    // a complete packet) and all non-TX states reset cleanly.
+    const bool was_writing = (state_ == State::TxWriting);
     reset_link_unconfigured();
     std::fprintf(stderr, "[loraham] daemon link lost%s\n",
-                 was_tx ? " (TX in flight -> uncertain)" : "");
+                 was_writing ? " (incomplete TX discarded; never daemon-owned)" : "");
     if (sink_) sink_->on_backend_failure();
 }
 

@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+- Preserve uncertain TX ownership across every teardown path. Previously only the
+  bridge-side TX deadline entered draining; two paths lost ownership tracking while
+  the daemon owned a complete TX frame: (1) a daemon link loss during `TxPending`
+  reset to a reusable `Disconnected`, and (2) an XR client/session teardown
+  (`~XrConnection`) reset any non-draining/faulted state via `stop()`. Now
+  `XrConnection` teardown unconditionally calls `abandon_pending_tx()` before
+  detaching the sink and stopping (a no-op unless a TX is owned), so any XR teardown
+  during a daemon-owned TX enters draining; and `LorahamBackend::handle_disconnect()`
+  faults (instead of resetting) when the daemon link drops while it owns a complete
+  frame. Faulted is restart-only because daemon v111 provides no source-proven
+  cancel/result recovery after link loss. A still-incomplete (`TxWriting`,
+  bridge-owned) frame keeps resetting cleanly; normal terminal completion before any
+  teardown still returns to `Ready` without draining or faulting.
+
 ### Changed
 - Make all LoRaHAM daemon I/O non-blocking and deadline-bounded. The daemon
   connect (`EINPROGRESS` + `getsockopt(SO_ERROR)`), CONF/DATA writes (partial,

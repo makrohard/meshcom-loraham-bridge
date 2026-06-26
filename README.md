@@ -73,16 +73,26 @@ packet has been written. A transport failure while the frame is still being
 written means the daemon never received a complete packet (so it cannot transmit
 it): that is a clean backend failure, not an uncertain one.
 
-TX-timeout ownership: a TX has a single owner at a time. If the bridge's TX
-deadline expires before the daemon delivers a result (after the daemon already
-owns the frame), the bridge does **not** fabricate a `TIMEOUT` (it cannot know
-whether the packet transmitted). It closes
-the XR session (so the firmware resolves the TX as uncertain/UNKNOWN, never
-resent) and keeps the daemon socket open to *drain* the outstanding result; no new
-TX is accepted until that ownership is provably clear. If the daemon link dies
-mid-drain or a bounded drain deadline elapses without a result, the backend enters
-a logged faulted state (TX disabled until restart) rather than risk a duplicate
-transmission.
+TX uncertain-ownership preservation: once the complete frame is written the daemon
+owns it, and ownership is preserved across **every** way the bridge can lose its
+XR side or its daemon link:
+
+- **Any XR teardown while the daemon owns the TX** — the bridge-side TX deadline,
+  an XR peer disconnect, or a session-owned close (e.g. PONG timeout, a malformed
+  inbound frame) — hands the in-flight TX to the backend and enters *draining*: the
+  bridge does **not** fabricate a `TIMEOUT`/result (it cannot know whether the
+  packet transmitted), the firmware resolves the TX as uncertain/UNKNOWN (never
+  resent), and the daemon socket is kept open and polled headlessly to drain the
+  outstanding result. A late result clears ownership and is never delivered to a
+  future XR session; no new TX is accepted until ownership is provably clear.
+- **A daemon link loss while the daemon owns the TX** (during pending or draining)
+  enters a logged **faulted** state — the frame may still transmit and daemon v111
+  offers no post-disconnect cancel or result recovery, so TX stays disabled until
+  the bridge process restarts (no reset to a reusable state, no auto-reconnect).
+
+A bounded drain deadline elapsing without a result also faults, rather than risk a
+duplicate transmission. By contrast, a still-incomplete (bridge-owned, *TxWriting*)
+frame that fails is a clean reset — the daemon never received a complete packet.
 
 ## Build
 

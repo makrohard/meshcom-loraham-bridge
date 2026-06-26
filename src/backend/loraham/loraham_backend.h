@@ -26,13 +26,15 @@
 // failure during TxWriting means the daemon never received a complete frame, so
 // it cannot transmit it — that is a clean backend failure (not "uncertain").
 //
-// TX timeout recovery (M12d, preserved exactly):
+// Uncertain-ownership recovery once a complete TX_PACKET is daemon-owned
+// (TxPending). Every way the XR side can give up must preserve ownership:
 //
 //   TxPending ─abandon_pending_tx()─▶ Draining ─daemon TX_RESULT─▶ Disconnected
-//                                         │
-//                       link loss / drain timeout │
-//                                         ▼
-//                                      Faulted (TX disabled until restart)
+//      │  (XR TX deadline, OR any XR session/connection teardown)│
+//      │                                       link loss / drain timeout │
+//      │  daemon link loss (handle_disconnect)                   ▼
+//      └───────────────────────────────────────────────────▶ Faulted
+//                                                  (TX disabled until restart)
 //
 //   Draining keeps the daemon socket open and reads it headlessly until the
 //   outstanding TX_RESULT arrives (ownership cleared) — never forwarding that
@@ -40,6 +42,13 @@
 //   cancels the TX nor lets us learn its outcome, and a late TX_RESULT is only
 //   delivered on the SAME still-open slot, so we must drain. A bounded drain
 //   deadline, or a link loss during draining, transitions to Faulted.
+//
+//   A daemon link loss while the daemon already owns the TX (TxPending) goes
+//   straight to Faulted: the frame may still transmit and daemon v111 offers no
+//   post-disconnect result recovery, so the backend stays unavailable until the
+//   bridge process restarts (no reset to a reusable Disconnected, no auto
+//   reconnect). A partially-written frame (TxWriting) is still bridge-owned, so a
+//   loss there resets cleanly — the daemon never received a complete packet.
 //
 // While not in the Ready state the backend is not ready() and begin_configure()
 // is refused (Draining/Faulted) or only restarts from Disconnected, so a fresh

@@ -15,6 +15,7 @@
 #include "backend/loraham/loraham_backend.h"
 #include "backend/loraham/loraham_framing.h"
 #include "backend/loraham/loraham_transport.h"
+#include "fake_daemon.h"
 #include "test_helpers.h"
 #include "util/clock.h"
 
@@ -22,116 +23,9 @@ using namespace mebridge;
 using mebridge::loraham::Band;
 using mebridge::loraham::ConnectState;
 using testutil::default_config;
+using testutil::FakeDaemon;
 
 namespace {
-
-// In-memory NON-BLOCKING DaemonTransport. Scripts connect progress, CONF status
-// replies, partial writes, and fragmented reads; captures what the backend sends.
-class FakeDaemon : public loraham::DaemonTransport {
-public:
-    // --- connect scripting ---
-    bool begin_connect_result = true;
-    bool connect_stuck = false;                  // poll_connect always Connecting
-    std::deque<ConnectState> connect_script;     // else popped per poll_connect
-
-    // --- write scripting ---
-    bool throttle_writes = false;                // one chunk per call, then EAGAIN
-    size_t throttle_chunk = 4;
-    bool data_send_fail = false;                 // data_send_some returns -1
-
-    // --- CONF reply scripting ---
-    std::string status_line = "STATUS RADIO=READY TX=0 CAD=0 TXMODE=MANAGED";
-    std::string status_prefix;                   // broadcasts emitted before STATUS
-    bool auto_status = true;                      // queue status after GET STATUS seen
-    size_t conf_recv_chunk = 0;                  // 0 = serve all available
-    bool conf_recv_disconnect = false;
-
-    // --- DATA scripting ---
-    bool recv_disconnect = false;
-    size_t data_recv_chunk = 0;                  // 0 = serve all available
-
-    // --- observed ---
-    bool connected = false;
-    Band band = Band::Band433;
-    std::string conf_sent;
-    std::vector<uint8_t> data_sent;
-    std::vector<uint8_t> data_in;                // scripted inbound DATA
-    std::string conf_in;                         // scripted inbound CONF
-
-    void push_data(const uint8_t* p, size_t n) { data_in.insert(data_in.end(), p, p + n); }
-    void deliver_status() { conf_in += status_prefix; conf_in += status_line; conf_in += "\n"; }
-
-    bool begin_connect(Band b) override {
-        if (!begin_connect_result) return false;
-        connected = true;
-        band = b;
-        status_queued_ = false;
-        conf_in.clear();
-        conf_blocked_ = data_blocked_ = false;
-        return true;
-    }
-    ConnectState poll_connect() override {
-        if (connect_stuck) return ConnectState::Connecting;
-        if (!connect_script.empty()) {
-            ConnectState s = connect_script.front();
-            connect_script.pop_front();
-            return s;
-        }
-        return ConnectState::Connected;
-    }
-    int conf_send_some(const uint8_t* d, size_t len) override {
-        size_t n = take_write(len, &conf_blocked_);
-        if (n) conf_sent.append(reinterpret_cast<const char*>(d), n);
-        maybe_queue_status();
-        return static_cast<int>(n);
-    }
-    int data_send_some(const uint8_t* d, size_t len) override {
-        if (data_send_fail) return -1;
-        size_t n = take_write(len, &data_blocked_);
-        if (n) data_sent.insert(data_sent.end(), d, d + n);
-        return static_cast<int>(n);
-    }
-    int conf_recv(uint8_t* buf, int cap) override {
-        if (conf_recv_disconnect) return -1;
-        if (conf_in.empty()) return 0;
-        size_t n = conf_in.size();
-        if (conf_recv_chunk && n > conf_recv_chunk) n = conf_recv_chunk;
-        if (n > static_cast<size_t>(cap)) n = static_cast<size_t>(cap);
-        std::memcpy(buf, conf_in.data(), n);
-        conf_in.erase(0, n);
-        return static_cast<int>(n);
-    }
-    int data_recv(uint8_t* buf, int cap) override {
-        if (recv_disconnect) return -1;
-        if (data_in.empty()) return 0;
-        size_t n = data_in.size();
-        if (data_recv_chunk && n > data_recv_chunk) n = data_recv_chunk;
-        if (n > static_cast<size_t>(cap)) n = static_cast<size_t>(cap);
-        std::memcpy(buf, data_in.data(), n);
-        data_in.erase(data_in.begin(), data_in.begin() + n);
-        return static_cast<int>(n);
-    }
-    void close() override { connected = false; }
-
-private:
-    bool status_queued_ = false;
-    bool conf_blocked_ = false;
-    bool data_blocked_ = false;
-
-    size_t take_write(size_t len, bool* blocked) {
-        if (!throttle_writes) return len;
-        if (*blocked) { *blocked = false; return 0; }  // EAGAIN this call
-        *blocked = true;
-        return len < throttle_chunk ? len : throttle_chunk;
-    }
-    void maybe_queue_status() {
-        if (auto_status && !status_queued_ &&
-            conf_sent.find("GET STATUS\n") != std::string::npos) {
-            status_queued_ = true;
-            deliver_status();
-        }
-    }
-};
 
 struct RecSink : BackendSink {
     std::vector<RxEvent> rx;
@@ -473,6 +367,11 @@ void test_data_write_failure_after_partial() {
     CHECK(sink.tx.empty());            // never a (false) terminal result
     CHECK(!be.tx_in_flight());
     CHECK(!be.ready());
+    CHECK(!be.faulted());              // bridge-owned frame -> clean reset, not faulted
+    // A fresh configuration is permitted (no complete frame ever reached daemon).
+    ft.data_send_fail = false;
+    ft.throttle_writes = false;
+    CHECK(configure_now(be, sink, default_config()).applied);
 }
 
 void test_stale_tx_result_ignored() {
@@ -489,19 +388,71 @@ void test_stale_tx_result_ignored() {
     CHECK(sink.tx.empty());
 }
 
-void test_disconnect_is_backend_failure() {
+// Daemon DATA loss while the daemon owns a complete TX (TxPending): no terminal
+// result, backend failure reported, Faulted, and begin_configure refused after.
+void test_data_loss_during_pending_faults() {
     FakeDaemon ft; RecSink sink; ManualClock clk;
     LorahamBackend be(ft, clk);
     be.set_sink(&sink);
     be.start();
     CHECK(configure_now(be, sink, default_config()).applied);
     CHECK(be.submit_tx((const uint8_t*)"x", 1));
+    CHECK(!be.tx_writing());            // full frame written -> daemon-owned
 
-    ft.recv_disconnect = true;
+    ft.recv_disconnect = true;          // daemon DATA link drops
+    be.poll();
+    CHECK(sink.failures == 1);          // active session told it is uncertain
+    CHECK(sink.tx.empty());             // never a (false) terminal result
+    CHECK(be.faulted());                // daemon may still transmit -> Faulted
+    CHECK(!be.ready());
+    CHECK(be.begin_configure(default_config()) == 0);  // restart-only
+}
+
+// Daemon CONF loss while the daemon owns a complete TX has the same safe outcome.
+void test_conf_loss_during_pending_faults() {
+    FakeDaemon ft; RecSink sink; ManualClock clk;
+    LorahamBackend be(ft, clk);
+    be.set_sink(&sink);
+    be.start();
+    CHECK(configure_now(be, sink, default_config()).applied);
+    CHECK(be.submit_tx((const uint8_t*)"x", 1));
+    CHECK(!be.tx_writing());
+
+    ft.conf_recv_disconnect = true;     // daemon CONF link drops
     be.poll();
     CHECK(sink.failures == 1);
+    CHECK(sink.tx.empty());
+    CHECK(be.faulted());
     CHECK(!be.ready());
-    CHECK(sink.tx.empty());             // never a (false) success on disconnect
+    CHECK(be.begin_configure(default_config()) == 0);
+}
+
+// Daemon loss while a frame is only partially written (TxWriting, still
+// bridge-owned): no false success, a CLEAN reset (not Faulted), and a fresh
+// configuration is permitted because no complete frame ever reached the daemon.
+void test_data_loss_during_writing_resets_cleanly() {
+    FakeDaemon ft; RecSink sink; ManualClock clk;
+    LorahamBackend be(ft, clk);
+    be.set_sink(&sink);
+    be.start();
+    CHECK(configure_now(be, sink, default_config()).applied);
+
+    ft.throttle_writes = true;          // leave the frame partly written
+    ft.throttle_chunk = 2;
+    const uint8_t payload[5] = {1, 2, 3, 4, 5};
+    CHECK(be.submit_tx(payload, 5));
+    CHECK(be.tx_writing());
+
+    ft.recv_disconnect = true;          // daemon link drops mid-write
+    be.poll();
+    CHECK(sink.failures == 1);
+    CHECK(sink.tx.empty());             // no terminal success claimed
+    CHECK(!be.faulted());               // never daemon-owned -> not faulted
+    CHECK(!be.tx_in_flight());
+    // A fresh configuration is allowed (clean reset, not restart-only).
+    ft.recv_disconnect = false;
+    ft.throttle_writes = false;
+    CHECK(configure_now(be, sink, default_config()).applied);
 }
 
 // --- M12d: TX-timeout ownership recovery (preserved exactly) ----------------
@@ -606,7 +557,9 @@ int main() {
     RUN(test_partial_data_write_resumes);
     RUN(test_data_write_failure_after_partial);
     RUN(test_stale_tx_result_ignored);
-    RUN(test_disconnect_is_backend_failure);
+    RUN(test_data_loss_during_pending_faults);
+    RUN(test_conf_loss_during_pending_faults);
+    RUN(test_data_loss_during_writing_resets_cleanly);
     RUN(test_abandon_enters_draining);
     RUN(test_configure_refused_while_draining);
     RUN(test_drain_resolves_on_late_result_then_recovers);

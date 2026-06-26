@@ -20,6 +20,14 @@ XrConnection::XrConnection(int fd, RadioBackend& backend, const AuthConfig& auth
 }
 
 XrConnection::~XrConnection() {
+    // Preserve TX ownership across EVERY teardown path. If a complete TX_PACKET
+    // is still daemon-owned (backend TxPending), abandon_pending_tx() moves the
+    // backend to Draining so stop() keeps the daemon link open to drain the final
+    // result — the daemon may still transmit after this client is gone. This must
+    // run before detaching the sink and before stop(), and must not depend on the
+    // session (which has already cleared its own tx_in_flight_ on close). It is a
+    // no-op unless the backend currently owns a TX (see abandon_pending_tx()).
+    backend_.abandon_pending_tx();
     backend_.set_sink(nullptr);
     backend_.stop();
     if (fd_ >= 0) ::close(fd_);
