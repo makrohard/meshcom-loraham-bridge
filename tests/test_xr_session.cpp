@@ -310,6 +310,27 @@ void test_backend_failure_while_pending() {
     CHECK(f.s.close_reason() == CloseReason::BackendFailure);
 }
 
+// M12d: bridge TX deadline must NOT fabricate a terminal result. It hands
+// ownership to the backend (abandon) and closes the session so the firmware
+// resolves the TX as UNKNOWN.
+void test_tx_deadline_abandons_without_timeout() {
+    Fix f;
+    bring_ready_open(f);
+    const uint8_t data[3] = {1, 2, 3};
+    f.feed(build_tx_request(55, data, sizeof(data)));  // submit; do NOT poll backend
+    CHECK(f.s.tx_in_flight());
+    CHECK(f.be.tx_in_flight());                        // backend holds the TX
+
+    f.clk.advance(XrSession::default_timeouts().tx_ms + 1);  // past the bridge TX ceiling
+    f.s.tick();
+
+    auto out = drain(f.s);
+    CHECK(count_type(out, MSG_TX_RESULT) == 0);        // no fabricated TIMEOUT/result
+    CHECK(f.s.closed());
+    CHECK(f.s.close_reason() == CloseReason::TxTimeoutUncertain);
+    CHECK(!f.be.tx_in_flight());                       // backend was told to abandon
+}
+
 // 14. stale backend completion is ignored
 void test_stale_completion_ignored() {
     Fix f;
@@ -384,6 +405,7 @@ int main() {
     RUN(test_tx_channel_busy);
     RUN(test_tx_timeout_and_radio_error);
     RUN(test_backend_failure_while_pending);
+    RUN(test_tx_deadline_abandons_without_timeout);
     RUN(test_stale_completion_ignored);
     RUN(test_ping_pong);
     RUN(test_unsolicited_pong);

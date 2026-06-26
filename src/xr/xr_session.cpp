@@ -81,6 +81,7 @@ const char* close_reason_name(CloseReason r) {
         case CloseReason::AuthTimeout:      return "auth-timeout";
         case CloseReason::ConfigTimeout:    return "config-timeout";
         case CloseReason::PongTimeout:      return "pong-timeout";
+        case CloseReason::TxTimeoutUncertain: return "tx-timeout-uncertain";
         case CloseReason::InternalError:    return "internal-error";
     }
     return "unknown";
@@ -332,11 +333,16 @@ void XrSession::tick() {
 
     if (phase_ != Phase::Ready) return;
 
-    // Bridge-side TX ceiling: a stuck in-flight TX resolves as TIMEOUT (terminal
-    // non-success, never a resend). A later backend completion is then stale.
+    // Bridge-side TX ceiling. We do NOT know whether the backend/daemon
+    // transmitted, so we never fabricate a terminal TX_RESULT here. Hand
+    // ownership to the backend's recovery (it keeps tracking the TX downstream)
+    // and close the session — the firmware then resolves this TX as UNKNOWN
+    // (uncertain, never resent), and the backend refuses new TX until the
+    // outstanding one is provably clear.
     if (tx_in_flight_ && now >= tx_deadline_at_) {
-        map_and_send_tx_result(TxOutcome::Timeout);
-        if (phase_ == Phase::Closed) return;
+        backend_.abandon_pending_tx();
+        close(CloseReason::TxTimeoutUncertain);
+        return;
     }
 
     // Keepalive: originate PING only in Ready; missing PONG closes.

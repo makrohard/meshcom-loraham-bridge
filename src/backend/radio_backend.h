@@ -44,6 +44,14 @@ struct RxEvent {
 // firmware ONLY when applied == true AND effective exactly equals the requested
 // config. Anything else is a configuration failure (fail closed). The bridge
 // never reports success merely because it forwarded a configuration downstream.
+//
+// What `applied == true` means is backend-defined CONTROL-PLANE acceptance, not
+// physical proof:
+//   * FakeBackend returns the exact effective config it accepted (deterministic).
+//   * The LoRaHAM backend means: the request passed bridge validation, was
+//     submitted through the daemon's existing CONF interface, and the daemon then
+//     reported the radio ready. It is NOT a hardware-register read-back and NOT
+//     on-air/RF confirmation (daemon v111 exposes neither).
 struct ConfigureResult {
     bool applied = false;
     extradio::RadioConfig effective{};
@@ -82,6 +90,14 @@ public:
     // accept it (e.g. not ready, or one already in flight). A true return is NOT
     // RF success — the terminal result arrives later via on_tx_complete().
     virtual bool submit_tx(const uint8_t* data, size_t len) = 0;
+
+    // The XR session is abandoning the in-flight TX because its bridge-side
+    // deadline expired before any terminal result arrived. The backend MUST NOT
+    // treat the packet as a known success or failure: it may still be queued or
+    // transmitting downstream. The backend retains ownership and runs its own
+    // recovery so a later result cannot leak to a future session. No terminal
+    // TX_RESULT is fabricated. Safe to call when nothing is in flight (no-op).
+    virtual void abandon_pending_tx() = 0;
 
     // Drive backend work and deliver any pending async events to the sink. Called
     // once per event-loop iteration. Non-blocking.

@@ -55,6 +55,9 @@ public:
     void stop() override { started_ = false; }
     bool ready() const override { return started_ && configured_; }
     bool submit_tx(const uint8_t* data, size_t len) override;
+    // The fake has no real downstream owner, so abandoning simply forgets the
+    // in-flight TX (no draining/recovery is meaningful here).
+    void abandon_pending_tx() override { tx_pending_ = false; pending_tx_result_.reset(); }
     void poll() override;
 
     // --- introspection for tests -----------------------------------------

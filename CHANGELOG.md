@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- Harden bridge TX-timeout ownership. On a bridge-side TX deadline the session no
+  longer fabricates a `TIMEOUT`: it abandons the TX to the LoRaHAM backend and
+  closes the XR session (firmware resolves UNKNOWN). The backend keeps the daemon
+  socket open and drains the outstanding `TX_RESULT`, refusing new TX until
+  ownership is provably clear; a mid-drain link loss or bounded drain timeout
+  enters a faulted state (TX disabled until restart) instead of risking a
+  duplicate transmission. Source analysis confirmed daemon v111 does not cancel a
+  queued/in-flight TX on client disconnect and drops late results to closed slots.
+- Clarify that LoRaHAM `ConfigureResult.applied` is control-plane acceptance, not
+  a hardware-register read-back or on-air/RF confirmation (comments + README).
+
 ## [0.1.0] - 2026-06-26
 
 First working release. Bridges MeshCom firmware (XR external-radio TCP protocol

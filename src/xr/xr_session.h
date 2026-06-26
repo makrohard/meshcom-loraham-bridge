@@ -58,6 +58,7 @@ enum class CloseReason : uint8_t {
     AuthTimeout,
     ConfigTimeout,
     PongTimeout,
+    TxTimeoutUncertain, // bridge TX deadline; daemon outcome unknown (no fabricated result)
     InternalError,      // encode failure (should not happen)
 };
 

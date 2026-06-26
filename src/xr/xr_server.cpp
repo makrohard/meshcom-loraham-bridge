@@ -144,6 +144,10 @@ void XrServer::poll_once(int timeout_ms) {
         conn_->tick();
         conn_->service_write();
         drop_connection_if_finished();
+    } else {
+        // No active client: keep pumping the backend so a post-timeout TX
+        // recovery (draining the daemon's outstanding result) can complete.
+        backend_.poll();
     }
 }
 

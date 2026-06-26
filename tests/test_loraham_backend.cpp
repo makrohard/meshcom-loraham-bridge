@@ -10,6 +10,7 @@
 #include "backend/loraham/loraham_framing.h"
 #include "backend/loraham/loraham_transport.h"
 #include "test_helpers.h"
+#include "util/clock.h"
 
 using namespace mebridge;
 using mebridge::loraham::Band;
@@ -82,7 +83,8 @@ struct RecSink : BackendSink {
 void test_configure_success_and_conf_sequence() {
     FakeDaemon ft;
     RecSink sink;
-    LorahamBackend be(ft);
+    ManualClock clk;
+    LorahamBackend be(ft, clk);
     be.set_sink(&sink);
     be.start();
 
@@ -103,7 +105,8 @@ void test_configure_success_and_conf_sequence() {
 
 void test_configure_rejects_invalid_config() {
     FakeDaemon ft;
-    LorahamBackend be(ft);
+    ManualClock clk;
+    LorahamBackend be(ft, clk);
     be.start();
     auto cfg = default_config();
     cfg.freq_hz = 600000000u;  // out of band
@@ -117,7 +120,8 @@ void test_configure_rejects_invalid_config() {
 void test_configure_not_ready() {
     FakeDaemon ft;
     ft.status_line = "STATUS RADIO=FAILED TX=0";
-    LorahamBackend be(ft);
+    ManualClock clk;
+    LorahamBackend be(ft, clk);
     be.start();
     auto r = be.configure(default_config());
     CHECK(!r.applied);
@@ -128,7 +132,8 @@ void test_configure_not_ready() {
 void test_rx_forwarding() {
     FakeDaemon ft;
     RecSink sink;
-    LorahamBackend be(ft);
+    ManualClock clk;
+    LorahamBackend be(ft, clk);
     be.set_sink(&sink);
     be.start();
     CHECK(be.configure(default_config()).applied);
@@ -149,7 +154,8 @@ void test_rx_forwarding() {
 void test_tx_success_and_one_in_flight() {
     FakeDaemon ft;
     RecSink sink;
-    LorahamBackend be(ft);
+    ManualClock clk;
+    LorahamBackend be(ft, clk);
     be.set_sink(&sink);
     be.start();
     CHECK(be.configure(default_config()).applied);
@@ -182,7 +188,8 @@ void test_tx_outcome_mapping() {
     for (auto& c : cases) {
         FakeDaemon ft;
         RecSink sink;
-        LorahamBackend be(ft);
+        ManualClock clk;
+        LorahamBackend be(ft, clk);
         be.set_sink(&sink);
         be.start();
         CHECK(be.configure(default_config()).applied);
@@ -200,7 +207,8 @@ void test_tx_outcome_mapping() {
 void test_stale_tx_result_ignored() {
     FakeDaemon ft;
     RecSink sink;
-    LorahamBackend be(ft);
+    ManualClock clk;
+    LorahamBackend be(ft, clk);
     be.set_sink(&sink);
     be.start();
     CHECK(be.configure(default_config()).applied);
@@ -215,7 +223,8 @@ void test_stale_tx_result_ignored() {
 void test_disconnect_is_backend_failure() {
     FakeDaemon ft;
     RecSink sink;
-    LorahamBackend be(ft);
+    ManualClock clk;
+    LorahamBackend be(ft, clk);
     be.set_sink(&sink);
     be.start();
     CHECK(be.configure(default_config()).applied);
@@ -226,6 +235,90 @@ void test_disconnect_is_backend_failure() {
     CHECK(sink.failures == 1);
     CHECK(!be.ready());
     CHECK(sink.tx.empty());             // never a (false) success on disconnect
+}
+
+// --- M12d: TX-timeout ownership recovery ----------------------------------
+
+// Drive a backend to a Pending TX, then abandon it (as the XR session does on
+// its deadline). Returns with the backend in Draining.
+static void to_draining(LorahamBackend& be, RecSink& sink) {
+    be.set_sink(&sink);
+    be.start();
+    CHECK(be.configure(default_config()).applied);
+    CHECK(be.submit_tx((const uint8_t*)"hi", 2));
+    CHECK(be.tx_in_flight());
+    be.abandon_pending_tx();
+    CHECK(be.draining());
+    CHECK(be.tx_in_flight());     // still owned downstream
+    CHECK(!be.ready());           // not TX-capable while draining
+}
+
+void test_abandon_enters_draining() {
+    FakeDaemon ft; RecSink sink; ManualClock clk;
+    LorahamBackend be(ft, clk);
+    to_draining(be, sink);
+    CHECK(sink.tx.empty());       // no fabricated terminal result
+    CHECK(!be.faulted());
+}
+
+void test_configure_refused_while_draining() {
+    FakeDaemon ft; RecSink sink; ManualClock clk;
+    LorahamBackend be(ft, clk);
+    to_draining(be, sink);
+    // A fresh session cannot reconfigure (reach TX-capable) while draining.
+    CHECK(!be.configure(default_config()).applied);
+    CHECK(be.draining());
+}
+
+void test_drain_resolves_on_late_result_then_recovers() {
+    FakeDaemon ft; RecSink sink; ManualClock clk;
+    LorahamBackend be(ft, clk);
+    to_draining(be, sink);
+
+    // The outstanding daemon result finally arrives during draining: it clears
+    // ownership and is NOT delivered to any client.
+    uint8_t res[16];
+    size_t n = loraham::encode_tx_result(res, sizeof(res), loraham::TX_STATUS_OK, 0, 1);
+    ft.push_data(res, n);
+    be.poll();
+    CHECK(!be.draining());
+    CHECK(!be.tx_in_flight());
+    CHECK(!be.faulted());
+    CHECK(sink.tx.empty());       // late result never surfaced to a client
+
+    // A fresh configuration + TX now works normally, and its result is delivered.
+    CHECK(be.configure(default_config()).applied);
+    CHECK(be.submit_tx((const uint8_t*)"yo", 2));
+    uint8_t ok[16];
+    size_t m = loraham::encode_tx_result(ok, sizeof(ok), loraham::TX_STATUS_OK, 0, 9);
+    ft.push_data(ok, m);
+    be.poll();
+    CHECK(sink.tx.size() == 1);   // exactly the new transaction's result
+    CHECK(sink.tx[0] == TxOutcome::Success);
+}
+
+void test_drain_transport_death_faults() {
+    FakeDaemon ft; RecSink sink; ManualClock clk;
+    LorahamBackend be(ft, clk);
+    to_draining(be, sink);
+    ft.recv_disconnect = true;    // daemon link dies mid-drain
+    be.poll();
+    CHECK(be.faulted());
+    CHECK(!be.ready());
+    CHECK(sink.tx.empty());
+    CHECK(!be.configure(default_config()).applied);  // stays unavailable
+}
+
+void test_drain_timeout_faults() {
+    FakeDaemon ft; RecSink sink; ManualClock clk;
+    LorahamBackend be(ft, clk, /*config_timeout_ms=*/2000, /*drain_timeout_ms=*/30000);
+    to_draining(be, sink);
+    clk.advance(30001);           // bounded drain elapses with no result
+    be.poll();
+    CHECK(be.faulted());
+    CHECK(!be.ready());
+    CHECK(sink.tx.empty());
+    CHECK(!be.configure(default_config()).applied);
 }
 
 }  // namespace
@@ -239,6 +332,11 @@ int main() {
     RUN(test_tx_outcome_mapping);
     RUN(test_stale_tx_result_ignored);
     RUN(test_disconnect_is_backend_failure);
+    RUN(test_abandon_enters_draining);
+    RUN(test_configure_refused_while_draining);
+    RUN(test_drain_resolves_on_late_result_then_recovers);
+    RUN(test_drain_transport_death_faults);
+    RUN(test_drain_timeout_faults);
     std::fprintf(stderr, "test_loraham_backend: all passed\n");
     return 0;
 }

@@ -49,11 +49,23 @@ Backends (`--backend`):
 
 Configuration model: the bridge is the XR configuration authority. It validates a
 requested `RadioConfig` against the daemon's known LoRa limits, applies it via the
-daemon `CONF` socket, confirms the radio is healthy, and echoes the requested
-values as the effective configuration. Because daemon v111's `CONF SET` has no
-per-field acknowledgement, a `CONFIG_RESULT` success means "configuration was
-valid, sent, and the radio reports ready" — not a per-register read-back. This is
-a deliberate, documented trade-off that keeps the daemon untouched.
+daemon `CONF` socket, confirms the radio reports ready, and echoes the requested
+values as the effective configuration. A `CONFIG_RESULT` success is **control-plane
+acceptance** — the request was validated, submitted through the daemon's existing
+`CONF` interface, and the daemon reported the radio ready. It is **not** a
+hardware-register read-back and **not** on-air/RF confirmation (daemon v111
+exposes neither). This is a deliberate, documented trade-off that keeps the daemon
+untouched.
+
+TX-timeout ownership: a TX has a single owner at a time. If the bridge's TX
+deadline expires before the daemon delivers a result, the bridge does **not**
+fabricate a `TIMEOUT` (it cannot know whether the packet transmitted). It closes
+the XR session (so the firmware resolves the TX as uncertain/UNKNOWN, never
+resent) and keeps the daemon socket open to *drain* the outstanding result; no new
+TX is accepted until that ownership is provably clear. If the daemon link dies
+mid-drain or a bounded drain deadline elapses without a result, the backend enters
+a logged faulted state (TX disabled until restart) rather than risk a duplicate
+transmission.
 
 ## Build
 

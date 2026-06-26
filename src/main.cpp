@@ -111,7 +111,7 @@ int main(int argc, char** argv) {
         backend = std::make_unique<FakeBackend>();
     } else if (backend_name == "loraham") {
         loraham_transport = std::make_unique<loraham::PosixDaemonTransport>();
-        backend = std::make_unique<LorahamBackend>(*loraham_transport);
+        backend = std::make_unique<LorahamBackend>(*loraham_transport, clock);
     } else {
         std::fprintf(stderr, "error: unknown backend '%s' (use 'fake' or 'loraham')\n",
                      backend_name.c_str());
