@@ -56,6 +56,7 @@ void bring_ready_open(Fix& f) {
     CHECK(ar != nullptr && ar->payload[0] == AUTH_OK);
 
     f.feed(build_configure(default_config()));
+    f.be.poll();  // backend configuration completes asynchronously
     auto cr = drain(f.s);
     const Frame* cfg = find_type(cr, MSG_CONFIG_RESULT);
     CHECK(cfg != nullptr);
@@ -82,6 +83,7 @@ void test_fragmented_and_coalesced() {
         auto cfg = build_configure(default_config());
         both.insert(both.end(), cfg.begin(), cfg.end());
         f.feed(both);
+        f.be.poll();  // backend configuration completes asynchronously
         CHECK(f.s.ready());
         auto out = drain(f.s);
         CHECK(find_type(out, MSG_HELLO_ACK) != nullptr);
@@ -203,6 +205,7 @@ void test_config_mismatch_rejected() {
     eff.sf = 7;  // backend cannot honor sf=12 exactly
     f.be.script_config_effective(eff);
     f.feed(build_configure(default_config()));
+    f.be.poll();  // async config completes with a mismatched effective config
     auto out = drain(f.s);
     const Frame* cr = find_type(out, MSG_CONFIG_RESULT);
     CHECK(cr != nullptr);
@@ -210,6 +213,72 @@ void test_config_mismatch_rejected() {
     CHECK(cr->payload[0] != CFG_OK);
     CHECK(f.s.closed());
     CHECK(f.s.close_reason() == CloseReason::ConfigFailed);
+}
+
+// 7b. async config: a total backend failure (applied=false) closes, no success
+void test_config_backend_reports_failure() {
+    Fix f;
+    f.feed(build_hello());
+    (void)drain(f.s);
+    f.be.script_config_failure();
+    f.feed(build_configure(default_config()));
+    CHECK(f.s.phase() == Phase::Configuring);  // not resolved synchronously
+    f.be.poll();
+    auto out = drain(f.s);
+    const Frame* cr = find_type(out, MSG_CONFIG_RESULT);
+    CHECK(cr != nullptr && cr->payload[0] != CFG_OK);
+    CHECK(f.s.closed());
+    CHECK(f.s.close_reason() == CloseReason::ConfigFailed);
+}
+
+// 7c. async config: a slow/missing daemon hits the config deadline. The loop is
+// never blocked — time simply advances and the phase deadline fires.
+void test_config_deadline_when_backend_silent() {
+    Fix f;
+    f.feed(build_hello());
+    (void)drain(f.s);
+    f.feed(build_configure(default_config()));
+    CHECK(f.s.phase() == Phase::Configuring);
+    // Never poll the backend: the async configuration never completes.
+    f.clk.advance(XrSession::default_timeouts().config_ms + 1);
+    f.s.tick();
+    CHECK(f.s.closed());
+    CHECK(f.s.close_reason() == CloseReason::ConfigTimeout);
+    CHECK(count_type(drain(f.s), MSG_CONFIG_RESULT) == 0);  // no fabricated success
+}
+
+// 7d. a daemon disconnect during configuration yields no CONFIG_RESULT success
+void test_backend_failure_during_configuring() {
+    Fix f;
+    f.feed(build_hello());
+    (void)drain(f.s);
+    f.feed(build_configure(default_config()));
+    CHECK(f.s.phase() == Phase::Configuring);
+    f.s.on_backend_failure();  // daemon link lost mid-configuration
+    CHECK(f.s.closed());
+    CHECK(count_type(drain(f.s), MSG_CONFIG_RESULT) == 0);
+}
+
+// 7e. a configuration completion with a stale op token is ignored (generation
+// safety): a completion from an earlier/different operation must not reach a new
+// configuring session.
+void test_stale_config_completion_ignored() {
+    Fix f;
+    f.feed(build_hello());
+    (void)drain(f.s);
+    f.feed(build_configure(default_config()));
+    CHECK(f.s.phase() == Phase::Configuring);
+    // A completion carrying a token that is not this session's in-flight token.
+    ConfigureResult res;
+    res.applied = true;
+    res.effective = default_config();
+    f.s.on_configure_complete(/*op_token=*/0xDEADBEEF, res);
+    CHECK(!f.s.closed());
+    CHECK(f.s.phase() == Phase::Configuring);                 // unaffected
+    CHECK(count_type(drain(f.s), MSG_CONFIG_RESULT) == 0);
+    // The real completion still resolves the session normally.
+    f.be.poll();
+    CHECK(f.s.ready());
 }
 
 // 8. RX forwarding endian + metadata correctness
@@ -399,6 +468,10 @@ int main() {
     RUN(test_malformed_and_bad_state);
     RUN(test_config_exact_reaches_ready);
     RUN(test_config_mismatch_rejected);
+    RUN(test_config_backend_reports_failure);
+    RUN(test_config_deadline_when_backend_silent);
+    RUN(test_backend_failure_during_configuring);
+    RUN(test_stale_config_completion_ignored);
     RUN(test_rx_forwarding);
     RUN(test_one_tx_in_flight);
     RUN(test_tx_success);

@@ -7,6 +7,20 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Changed
+- Make all LoRaHAM daemon I/O non-blocking and deadline-bounded. The daemon
+  connect (`EINPROGRESS` + `getsockopt(SO_ERROR)`), CONF/DATA writes (partial,
+  resumable), and reads (reassembled, broadcast-filtered) no longer block the
+  single event loop. Configuration became an asynchronous progression driven by
+  the backend's `poll()`: `RadioBackend::configure()` is now `begin_configure()`,
+  with the result delivered via `BackendSink::on_configure_complete()` and fenced
+  by an operation token so a completion from a disconnected or earlier session can
+  never affect a new client; the XR session gains a `Configuring` phase. A
+  distinct `TxWriting` state keeps a queued/partially-written TX frame bridge-owned
+  until the whole frame is written (daemon ownership starts only then); a transport
+  failure mid-write is a clean backend failure, not an uncertain TX. The event loop
+  now shortens its poll timeout (≤ 100 ms) to the nearest XR/backend deadline. A
+  daemon loss during pending or draining TX still never yields success or
+  re-enables TX (M12d behavior preserved). No threads; one process, one event loop.
 - Harden bridge TX-timeout ownership. On a bridge-side TX deadline the session no
   longer fabricates a `TIMEOUT`: it abandons the TX to the LoRaHAM backend and
   closes the XR session (firmware resolves UNKNOWN). The backend keeps the daemon

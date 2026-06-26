@@ -6,28 +6,13 @@
 
 namespace mebridge {
 
-ConfigureResult FakeBackend::configure(const extradio::RadioConfig& requested) {
-    ConfigureResult r;
-    switch (config_mode_) {
-        case ConfigMode::Failure:
-            r.applied = false;
-            configured_ = false;
-            break;
-        case ConfigMode::Mismatch:
-            // Backend "applied" something, but not what was asked for. The
-            // session must NOT treat this as success.
-            r.applied = true;
-            r.effective = forced_effective_;
-            configured_ = true;
-            break;
-        case ConfigMode::Exact:
-        default:
-            r.applied = true;
-            r.effective = requested;  // honored exactly
-            configured_ = true;
-            break;
-    }
-    return r;
+uint32_t FakeBackend::begin_configure(const extradio::RadioConfig& requested) {
+    // Non-blocking: record the request and resolve it on the next poll(). The
+    // result is NEVER delivered synchronously from here.
+    config_pending_ = true;
+    pending_requested_ = requested;
+    config_token_ = ++next_token_;
+    return config_token_;
 }
 
 bool FakeBackend::submit_tx(const uint8_t* data, size_t len) {
@@ -46,6 +31,34 @@ bool FakeBackend::submit_tx(const uint8_t* data, size_t len) {
 
 void FakeBackend::poll() {
     if (!sink_) return;
+
+    // 0) Deliver a pending asynchronous configuration result (deferred from
+    //    begin_configure()). Generation-fenced by config_token_.
+    if (config_pending_) {
+        config_pending_ = false;
+        ConfigureResult r;
+        switch (config_mode_) {
+            case ConfigMode::Failure:
+                r.applied = false;
+                configured_ = false;
+                break;
+            case ConfigMode::Mismatch:
+                // Backend "applied" something, but not what was asked for. The
+                // session must NOT treat this as success.
+                r.applied = true;
+                r.effective = forced_effective_;
+                configured_ = true;
+                break;
+            case ConfigMode::Exact:
+            default:
+                r.applied = true;
+                r.effective = pending_requested_;  // honored exactly
+                configured_ = true;
+                break;
+        }
+        sink_->on_configure_complete(config_token_, r);
+        return;
+    }
 
     // 1) Backend failure takes precedence and is terminal for the session.
     if (fail_pending_) {

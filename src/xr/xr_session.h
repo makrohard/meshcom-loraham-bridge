@@ -38,6 +38,7 @@ enum class Phase : uint8_t {
     WaitHello,
     WaitAuth,
     WaitConfigure,
+    Configuring,    // CONFIGURE accepted; awaiting the backend's async result
     Ready,
     Closed,
 };
@@ -89,10 +90,15 @@ public:
     // Periodic time-driven work: phase deadlines, keepalive, TX timeout.
     void tick();
 
+    // Absolute time (clock ms) of the nearest active session deadline, or
+    // UINT64_MAX if none. The event loop uses it to shorten its poll timeout.
+    uint64_t next_deadline_ms() const;
+
     // BackendSink (called from RadioBackend::poll()).
     void on_rx(const RxEvent& rx) override;
     void on_tx_complete(TxOutcome outcome) override;
     void on_backend_failure() override;
+    void on_configure_complete(uint32_t op_token, const ConfigureResult& res) override;
 
     // Outbound byte queue (to be written to the socket by the owner).
     const uint8_t* out_data() const { return outbox_.data(); }
@@ -141,6 +147,11 @@ private:
 
     // configuration (the exact config we echoed; used for invariant checks)
     extradio::RadioConfig applied_cfg_{};
+    // the config requested by the client, awaiting the backend's async result
+    extradio::RadioConfig requested_cfg_{};
+    // token of the in-flight begin_configure(); fences a stale completion from an
+    // earlier/different session (which may share the backend) out of this one.
+    uint32_t config_op_token_ = 0;
 
     // TX
     bool tx_in_flight_ = false;

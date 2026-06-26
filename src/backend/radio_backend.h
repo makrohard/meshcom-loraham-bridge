@@ -69,6 +69,12 @@ public:
     // The backend link failed/closed. The bridge treats this as fatal for the
     // current client session (any in-flight TX becomes uncertain on the firmware).
     virtual void on_backend_failure() = 0;
+    // Terminal result of an asynchronous begin_configure(). Delivered from poll(),
+    // NEVER synchronously from begin_configure(). `op_token` echoes the token that
+    // begin_configure() returned: a session must ignore a completion whose token
+    // does not match its own in-flight configuration (it belongs to an earlier or
+    // a different session). See begin_configure().
+    virtual void on_configure_complete(uint32_t op_token, const ConfigureResult& res) = 0;
 };
 
 class RadioBackend {
@@ -78,13 +84,25 @@ public:
     // Where asynchronous events are delivered. Must be set before start().
     virtual void set_sink(BackendSink* sink) = 0;
 
-    // Apply a configuration. Synchronous and authoritative: the returned
-    // ConfigureResult decides whether the firmware reaches READY.
-    virtual ConfigureResult configure(const extradio::RadioConfig& requested) = 0;
+    // Begin applying a configuration. NON-BLOCKING: it starts a deadline-bounded
+    // progression (connect → submit settings → confirm radio ready) that is
+    // driven by poll(); the terminal result is delivered later via
+    // BackendSink::on_configure_complete(). It MUST NOT call the sink
+    // synchronously. Returns a non-zero operation token on a successful start, or
+    // 0 if the request is rejected outright (invalid config, or the backend is
+    // busy/faulted/draining and cannot start a new configuration). The token
+    // fences a stale completion from reaching a later session.
+    virtual uint32_t begin_configure(const extradio::RadioConfig& requested) = 0;
 
     virtual void start() = 0;
     virtual void stop() = 0;
     virtual bool ready() const = 0;
+
+    // Absolute time (clock ms) of this backend's nearest internal deadline
+    // (connect/configure/drain), or UINT64_MAX if none is pending. The event loop
+    // uses it to shorten its poll timeout so a backend deadline is serviced
+    // promptly without busy-waiting.
+    virtual uint64_t next_deadline_ms() const = 0;
 
     // Submit one packet for transmission. Returns false if the backend could not
     // accept it (e.g. not ready, or one already in flight). A true return is NOT

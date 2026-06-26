@@ -47,6 +47,9 @@ public:
 private:
     void try_accept();
     void drop_connection_if_finished();
+    // Poll timeout for the next loop iteration: capped at 100 ms and shortened to
+    // the nearest active XR/backend deadline so deadlines fire promptly.
+    int compute_timeout_ms() const;
 
     RadioBackend& backend_;
     AuthConfig auth_;

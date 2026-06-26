@@ -225,23 +225,29 @@ void XrSession::handle_frame(const extradio::Frame& f) {
                 close(CloseReason::ConfigFailed);
                 return;
             }
-            const ConfigureResult res = backend_.configure(requested);
-            // CONFIG_RESULT success is sent ONLY when the backend applied the
-            // request AND the effective config matches it exactly.
-            if (!res.applied || !configEqual(res.effective, requested)) {
+            // Begin the asynchronous, deadline-bounded backend configuration. The
+            // CONFIG_RESULT is sent later, from on_configure_complete().
+            const uint32_t token = backend_.begin_configure(requested);
+            if (token == 0) {
+                // Rejected outright (invalid for the daemon, or the backend is
+                // busy/faulted/draining): no false success.
                 const uint8_t bad[1] = { CFG_UNSUPPORTED };
                 emit(MSG_CONFIG_RESULT, 0, bad, 1);
                 close(CloseReason::ConfigFailed);
                 return;
             }
-            applied_cfg_ = res.effective;
-            uint8_t body[1 + kConfigPayloadSize];
-            body[0] = CFG_OK;
-            pack_config(body + 1, res.effective);
-            if (!emit(MSG_CONFIG_RESULT, 0, body, sizeof(body))) return;
-            enter_ready();
+            config_op_token_ = token;
+            requested_cfg_ = requested;
+            phase_ = Phase::Configuring;
+            // Re-arm the config deadline to bound the whole async progression.
+            arm(to_.config_ms, CloseReason::ConfigTimeout);
             return;
         }
+
+        case Phase::Configuring:
+            // The client must wait for CONFIG_RESULT; any frame now is illegal.
+            close(CloseReason::BadState);
+            return;
 
         case Phase::Ready:
             handle_ready_frame(f);
@@ -250,6 +256,26 @@ void XrSession::handle_frame(const extradio::Frame& f) {
         case Phase::Closed:
             return;
     }
+}
+
+void XrSession::on_configure_complete(uint32_t op_token, const ConfigureResult& res) {
+    if (phase_ != Phase::Configuring) return;       // cancelled / stale
+    if (op_token != config_op_token_) return;       // a different/earlier session's op
+
+    // CONFIG_RESULT success is sent ONLY when the backend applied the request AND
+    // the effective config matches it exactly (fail closed otherwise).
+    if (!res.applied || !configEqual(res.effective, requested_cfg_)) {
+        const uint8_t bad[1] = { CFG_UNSUPPORTED };
+        emit(MSG_CONFIG_RESULT, 0, bad, 1);
+        close(CloseReason::ConfigFailed);
+        return;
+    }
+    applied_cfg_ = res.effective;
+    uint8_t body[1 + kConfigPayloadSize];
+    body[0] = CFG_OK;
+    pack_config(body + 1, res.effective);
+    if (!emit(MSG_CONFIG_RESULT, 0, body, sizeof(body))) return;
+    enter_ready();
 }
 
 void XrSession::enter_ready() {
@@ -319,6 +345,19 @@ void XrSession::on_backend_failure() {
     // Fatal for this client: close without a TX_RESULT so any in-flight TX is
     // resolved as uncertain/unknown on the firmware, never as success.
     close(CloseReason::BackendFailure);
+}
+
+uint64_t XrSession::next_deadline_ms() const {
+    if (phase_ == Phase::Closed) return UINT64_MAX;
+    uint64_t next = UINT64_MAX;
+    auto take = [&next](uint64_t t) { if (t < next) next = t; };
+    if (deadline_active_) take(deadline_at_);          // handshake/auth/config
+    if (phase_ == Phase::Ready) {
+        if (tx_in_flight_) take(tx_deadline_at_);       // bridge TX ceiling
+        if (awaiting_pong_) take(pong_deadline_at_);
+        else take(next_ping_at_);                       // keepalive PING
+    }
+    return next;
 }
 
 void XrSession::tick() {

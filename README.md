@@ -45,21 +45,38 @@ Backends (`--backend`):
 - `fake` (default) — a deterministic in-memory `RadioBackend` for tests and dry
   runs; no RF, no daemon I/O.
 - `loraham` — speaks the LoRaHAM daemon v111 local Unix sockets (framed DATA for
-  RX/TX, CONF text for configuration). The daemon runs **unchanged**.
+  RX/TX, CONF text for configuration). The daemon runs **unchanged**. All daemon
+  connection, configuration, and I/O is **non-blocking and deadline-bounded**:
+  connect uses `EINPROGRESS` + `getsockopt(SO_ERROR)`, sends are partial/resumable,
+  reads are reassembled, and every phase has a deadline driven by the injected
+  clock — a slow, missing, restarting, or congested daemon can never stall XR
+  parsing, keepalive, timeout recovery, or client-disconnect handling.
 
 Configuration model: the bridge is the XR configuration authority. It validates a
-requested `RadioConfig` against the daemon's known LoRa limits, applies it via the
-daemon `CONF` socket, confirms the radio reports ready, and echoes the requested
-values as the effective configuration. A `CONFIG_RESULT` success is **control-plane
+requested `RadioConfig` against the daemon's known LoRa limits, then runs an
+**asynchronous, deadline-bounded** progression — connect the daemon sockets,
+submit the managed-TX and radio settings, query status, and confirm the radio
+reports ready — before echoing the requested values as the effective
+configuration. The XR session stays responsive throughout (it is in a
+`Configuring` phase); the `CONFIG_RESULT` is sent only once the whole sequence and
+the readiness check complete. A `CONFIG_RESULT` success is **control-plane
 acceptance** — the request was validated, submitted through the daemon's existing
 `CONF` interface, and the daemon reported the radio ready. It is **not** a
 hardware-register read-back and **not** on-air/RF confirmation (daemon v111
 exposes neither). This is a deliberate, documented trade-off that keeps the daemon
-untouched.
+untouched. Any daemon error, disconnect, malformed reply, or deadline during
+configuration fails the configuration (never a false success).
+
+TX ownership boundary: a queued or only partially written daemon TX frame is
+still **bridge-owned** — daemon ownership begins only once the complete framed
+packet has been written. A transport failure while the frame is still being
+written means the daemon never received a complete packet (so it cannot transmit
+it): that is a clean backend failure, not an uncertain one.
 
 TX-timeout ownership: a TX has a single owner at a time. If the bridge's TX
-deadline expires before the daemon delivers a result, the bridge does **not**
-fabricate a `TIMEOUT` (it cannot know whether the packet transmitted). It closes
+deadline expires before the daemon delivers a result (after the daemon already
+owns the frame), the bridge does **not** fabricate a `TIMEOUT` (it cannot know
+whether the packet transmitted). It closes
 the XR session (so the firmware resolves the TX as uncertain/UNKNOWN, never
 resent) and keeps the daemon socket open to *drain* the outstanding result; no new
 TX is accepted until that ownership is provably clear. If the daemon link dies

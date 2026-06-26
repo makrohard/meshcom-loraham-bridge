@@ -18,27 +18,34 @@
 namespace mebridge {
 namespace loraham {
 
+// Progress of an in-flight non-blocking connect of the DATA + CONF sockets.
+enum class ConnectState { Connecting, Connected, Failed };
+
+// Fully NON-BLOCKING two-socket transport. No call may wait in a blocking
+// syscall for daemon connect, writability, or input — every operation either
+// makes immediate progress or reports "not yet". The bridge's single event loop
+// drives progress by calling these from its per-iteration backend poll().
 class DaemonTransport {
 public:
     virtual ~DaemonTransport() = default;
 
-    // Open the framed DATA and CONF sockets for the given band. Replaces any
-    // existing connection. Returns true only if both are connected.
-    virtual bool connect(Band band) = 0;
+    // Begin connecting the framed DATA and CONF sockets for the given band.
+    // Replaces any existing connection. Non-blocking: returns false only on an
+    // immediate hard failure (e.g. socket() or bad path); on true, progress is
+    // observed via poll_connect(). The sockets are non-blocking from creation.
+    virtual bool begin_connect(Band band) = 0;
+    // Zero-timeout check of connect progress (getsockopt(SO_ERROR) after writable
+    // readiness). Never blocks. Once Connected, send/recv may be used.
+    virtual ConnectState poll_connect() = 0;
 
-    // Send bytes on the CONF socket (all-or-fail).
-    virtual bool conf_send(const uint8_t* data, size_t len) = 0;
-    // Read one newline-terminated line from CONF within timeout_ms (newline
-    // stripped). Returns false on timeout/closed/error.
-    virtual bool conf_read_line(std::string& out, uint32_t timeout_ms) = 0;
-    // Discard any pending CONF input (the daemon broadcasts TX=1/0 etc.); keeps
-    // the daemon's per-client output queue from filling. Non-blocking.
-    virtual void conf_drain() = 0;
+    // Non-blocking partial send. Returns bytes accepted (>= 0; 0 means the kernel
+    // buffer is momentarily full — retry later) or -1 on a fatal error/close.
+    virtual int conf_send_some(const uint8_t* data, size_t len) = 0;
+    virtual int data_send_some(const uint8_t* data, size_t len) = 0;
 
-    // Send bytes on the framed DATA socket (all-or-fail).
-    virtual bool data_send(const uint8_t* data, size_t len) = 0;
-    // Non-blocking read from the framed DATA socket. Returns bytes read (0 if
-    // nothing available now) or a negative value on close/error.
+    // Non-blocking read. Returns bytes read (> 0), 0 if nothing is available now,
+    // or a negative value on close/error.
+    virtual int conf_recv(uint8_t* buf, int cap) = 0;
     virtual int data_recv(uint8_t* buf, int cap) = 0;
 
     // Close both sockets (idempotent).

@@ -50,10 +50,11 @@ public:
 
     // --- RadioBackend -----------------------------------------------------
     void set_sink(BackendSink* sink) override { sink_ = sink; }
-    ConfigureResult configure(const extradio::RadioConfig& requested) override;
+    uint32_t begin_configure(const extradio::RadioConfig& requested) override;
     void start() override { started_ = true; }
     void stop() override { started_ = false; }
     bool ready() const override { return started_ && configured_; }
+    uint64_t next_deadline_ms() const override { return UINT64_MAX; }
     bool submit_tx(const uint8_t* data, size_t len) override;
     // The fake has no real downstream owner, so abandoning simply forgets the
     // in-flight TX (no draining/recovery is meaningful here).
@@ -73,6 +74,12 @@ private:
 
     ConfigMode config_mode_ = ConfigMode::Exact;
     extradio::RadioConfig forced_effective_{};
+
+    // Async configuration (completion delivered on the next poll(), never inline).
+    bool config_pending_ = false;
+    uint32_t config_token_ = 0;
+    uint32_t next_token_ = 0;
+    extradio::RadioConfig pending_requested_{};
 
     bool tx_pending_ = false;
     size_t submit_count_ = 0;

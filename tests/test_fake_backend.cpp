@@ -16,16 +16,38 @@ namespace {
 struct RecSink : BackendSink {
     std::vector<RxEvent> rx;
     std::vector<TxOutcome> tx;
+    std::vector<ConfigureResult> cfgs;
+    std::vector<uint32_t> cfg_tokens;
     int failures = 0;
     void on_rx(const RxEvent& e) override { rx.push_back(e); }
     void on_tx_complete(TxOutcome o) override { tx.push_back(o); }
     void on_backend_failure() override { ++failures; }
+    void on_configure_complete(uint32_t t, const ConfigureResult& r) override {
+        cfg_tokens.push_back(t);
+        cfgs.push_back(r);
+    }
 };
+
+// Drive a begin_configure() to its deferred completion and return the result.
+ConfigureResult run_configure(FakeBackend& be, RecSink& sink,
+                              const extradio::RadioConfig& cfg) {
+    sink.cfgs.clear();
+    sink.cfg_tokens.clear();
+    uint32_t tok = be.begin_configure(cfg);
+    CHECK(tok != 0);
+    CHECK(sink.cfgs.empty());  // never delivered synchronously
+    be.poll();
+    CHECK(sink.cfgs.size() == 1);
+    CHECK(sink.cfg_tokens[0] == tok);
+    return sink.cfgs[0];
+}
 
 void test_configure_exact_echo() {
     FakeBackend be;
+    RecSink sink;
+    be.set_sink(&sink);
     auto cfg = default_config();
-    auto r = be.configure(cfg);
+    auto r = run_configure(be, sink, cfg);
     CHECK(r.applied);
     CHECK(extradio::configEqual(r.effective, cfg));
     CHECK(be.ready() == false);  // not started yet
@@ -35,17 +57,21 @@ void test_configure_exact_echo() {
 
 void test_configure_failure() {
     FakeBackend be;
+    RecSink sink;
+    be.set_sink(&sink);
     be.script_config_failure();
-    auto r = be.configure(default_config());
+    auto r = run_configure(be, sink, default_config());
     CHECK(!r.applied);
 }
 
 void test_configure_mismatch() {
     FakeBackend be;
+    RecSink sink;
+    be.set_sink(&sink);
     auto eff = default_config();
     eff.sf = 7;  // different from what a caller requests with sf=12
     be.script_config_effective(eff);
-    auto r = be.configure(default_config());
+    auto r = run_configure(be, sink, default_config());
     CHECK(r.applied);
     CHECK(!extradio::configEqual(r.effective, default_config()));
 }
@@ -54,7 +80,7 @@ void test_tx_outcome_arming_and_one_in_flight() {
     FakeBackend be;
     RecSink sink;
     be.set_sink(&sink);
-    be.configure(default_config());
+    run_configure(be, sink, default_config());
     be.start();
 
     be.script_tx_outcome(TxOutcome::ChannelBusy);

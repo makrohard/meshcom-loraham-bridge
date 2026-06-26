@@ -30,21 +30,27 @@ public:
     explicit PosixDaemonTransport(DaemonPaths paths = default_daemon_paths());
     ~PosixDaemonTransport() override;
 
-    bool connect(Band band) override;
-    bool conf_send(const uint8_t* data, size_t len) override;
-    bool conf_read_line(std::string& out, uint32_t timeout_ms) override;
-    void conf_drain() override;
-    bool data_send(const uint8_t* data, size_t len) override;
+    bool begin_connect(Band band) override;
+    ConnectState poll_connect() override;
+    int conf_send_some(const uint8_t* data, size_t len) override;
+    int data_send_some(const uint8_t* data, size_t len) override;
+    int conf_recv(uint8_t* buf, int cap) override;
     int data_recv(uint8_t* buf, int cap) override;
     void close() override;
 
 private:
-    static bool send_all(int fd, const uint8_t* data, size_t len);
+    static int send_some(int fd, const uint8_t* data, size_t len);
+    static int recv_some(int fd, uint8_t* buf, int cap);
+    // Start one non-blocking AF_UNIX connect. *connecting set true on EINPROGRESS.
+    static int unix_begin_connect(const std::string& path, bool* connecting);
+    // Zero-timeout SO_ERROR check on a connecting fd. Returns the ConnectState.
+    static ConnectState check_one(int fd, bool* connecting);
 
     DaemonPaths paths_;
     int data_fd_ = -1;
     int conf_fd_ = -1;
-    std::string conf_linebuf_;  // CONF read carry-over between calls
+    bool data_connecting_ = false;  // connect() still in progress (EINPROGRESS)
+    bool conf_connecting_ = false;
 };
 
 }  // namespace loraham

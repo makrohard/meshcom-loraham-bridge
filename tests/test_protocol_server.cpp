@@ -117,6 +117,7 @@ void test_slow_client_bounded_output() {
     (void)drain(s);
     s.feed(build_configure(default_config()).data(),
            build_configure(default_config()).size());
+    be.poll();  // backend configuration completes asynchronously
     (void)drain(s);
     CHECK(s.ready());
 

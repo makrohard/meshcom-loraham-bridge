@@ -2,6 +2,9 @@
 // against an in-process fake daemon over loopback Unix sockets (no LoRaHAM daemon,
 // no hardware). This covers the one module the other tests stub out.
 //
+// All transport I/O is non-blocking: connect is begin_connect()/poll_connect(),
+// sends are partial (conf_send_some/data_send_some), reads are conf_recv/data_recv.
+//
 // SPDX-License-Identifier: MIT
 
 #include <sys/socket.h>
@@ -20,8 +23,6 @@ using namespace mebridge::loraham;
 
 namespace {
 
-// AF_UNIX stream listener at path. connect() to a listening socket succeeds and
-// is queued, so the transport's blocking connect returns before we accept().
 int make_listener(const std::string& path) {
     ::unlink(path.c_str());
     int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
@@ -56,7 +57,56 @@ std::string recv_str(int fd, size_t n) {
     return out;
 }
 
-// data_recv is non-blocking; retry briefly so the test isn't racy on delivery.
+// Drive begin_connect()/poll_connect() to completion (non-blocking; retry).
+void connect_transport(PosixDaemonTransport& t, Band band) {
+    CHECK(t.begin_connect(band));
+    for (int i = 0; i < 500; ++i) {
+        ConnectState s = t.poll_connect();
+        CHECK(s != ConnectState::Failed);
+        if (s == ConnectState::Connected) return;
+        ::usleep(1000);
+    }
+    CHECK(false);  // never connected
+}
+
+// Send the whole buffer via partial non-blocking writes.
+void send_all_conf(PosixDaemonTransport& t, const std::string& s) {
+    size_t off = 0;
+    for (int i = 0; i < 1000 && off < s.size(); ++i) {
+        int w = t.conf_send_some(reinterpret_cast<const uint8_t*>(s.data()) + off,
+                                 s.size() - off);
+        CHECK(w >= 0);
+        off += static_cast<size_t>(w);
+        if (w == 0) ::usleep(1000);
+    }
+    CHECK(off == s.size());
+}
+
+void send_all_data(PosixDaemonTransport& t, const uint8_t* d, size_t n) {
+    size_t off = 0;
+    for (int i = 0; i < 1000 && off < n; ++i) {
+        int w = t.data_send_some(d + off, n - off);
+        CHECK(w >= 0);
+        off += static_cast<size_t>(w);
+        if (w == 0) ::usleep(1000);
+    }
+    CHECK(off == n);
+}
+
+// Read exactly n bytes from CONF via non-blocking conf_recv (retry on 0).
+std::string conf_recv_n(PosixDaemonTransport& t, size_t n) {
+    std::string out;
+    uint8_t buf[256];
+    for (int i = 0; i < 2000 && out.size() < n; ++i) {
+        int r = t.conf_recv(buf, sizeof(buf));
+        CHECK(r >= 0);
+        if (r == 0) { ::usleep(1000); continue; }
+        out.append(reinterpret_cast<char*>(buf), static_cast<size_t>(r));
+    }
+    CHECK(out.size() >= n);
+    return out;
+}
+
 int data_recv_retry(PosixDaemonTransport& t, uint8_t* buf, int cap) {
     for (int i = 0; i < 200; ++i) {
         int r = t.data_recv(buf, cap);
@@ -90,30 +140,27 @@ struct TempPaths {
     }
 };
 
-void test_conf_roundtrip_and_fragmented_line() {
+void test_conf_roundtrip_and_fragmented_read() {
     TempPaths tp;
     int ldata = make_listener(tp.data);
     int lconf = make_listener(tp.conf);
 
     PosixDaemonTransport t(tp.as_daemon_paths());
-    CHECK(t.connect(Band::Band433));
+    connect_transport(t, Band::Band433);
     int sdata = accept_one(ldata);
     int sconf = accept_one(lconf);
 
     // transport -> daemon (CONF)
     const char* cmd = "GET STATUS\n";
-    CHECK(t.conf_send(reinterpret_cast<const uint8_t*>(cmd), std::strlen(cmd)));
+    send_all_conf(t, cmd);
     CHECK(recv_str(sconf, std::strlen(cmd)) == cmd);
 
-    // daemon -> transport (CONF), delivered in two fragments
+    // daemon -> transport (CONF), delivered in two fragments; conf_recv returns
+    // raw bytes (line reassembly is the backend's job) — we just collect them.
     send_str(sconf, "STATUS RADIO=");
     send_str(sconf, "READY TX=0\n");
-    std::string line;
-    CHECK(t.conf_read_line(line, 1000));
-    CHECK(line == "STATUS RADIO=READY TX=0");
-
-    // timeout path: nothing to read
-    CHECK(!t.conf_read_line(line, 50));
+    std::string got = conf_recv_n(t, std::strlen("STATUS RADIO=READY TX=0\n"));
+    CHECK(got == "STATUS RADIO=READY TX=0\n");
 
     ::close(sdata);
     ::close(sconf);
@@ -127,7 +174,7 @@ void test_data_tx_and_rx() {
     int lconf = make_listener(tp.conf);
 
     PosixDaemonTransport t(tp.as_daemon_paths());
-    CHECK(t.connect(Band::Band433));
+    connect_transport(t, Band::Band433);
     int sdata = accept_one(ldata);
     int sconf = accept_one(lconf);
 
@@ -135,7 +182,7 @@ void test_data_tx_and_rx() {
     const uint8_t rf[3] = {0x11, 0x22, 0x33};
     uint8_t txf[16];
     size_t txn = encode_tx_packet(txf, sizeof(txf), rf, 3);
-    CHECK(t.data_send(txf, txn));
+    send_all_data(t, txf, txn);
     std::string got = recv_str(sdata, txn);
     CHECK(got.size() == txn);
     CHECK(static_cast<uint8_t>(got[0]) == FRAMED_TX_PACKET);
@@ -174,7 +221,7 @@ void test_disconnect_detected() {
     int lconf = make_listener(tp.conf);
 
     PosixDaemonTransport t(tp.as_daemon_paths());
-    CHECK(t.connect(Band::Band433));
+    connect_transport(t, Band::Band433);
     int sdata = accept_one(ldata);
     int sconf = accept_one(lconf);
 
@@ -193,12 +240,30 @@ void test_disconnect_detected() {
     ::close(lconf);
 }
 
+void test_connect_to_missing_path_fails() {
+    TempPaths tp;  // no listeners created -> nothing to connect to
+    PosixDaemonTransport t(tp.as_daemon_paths());
+    // begin_connect fails immediately (ENOENT, not EINPROGRESS) for a missing
+    // AF_UNIX path, or the subsequent poll_connect reports Failed.
+    if (t.begin_connect(Band::Band433)) {
+        bool failed = false;
+        for (int i = 0; i < 50; ++i) {
+            ConnectState s = t.poll_connect();
+            if (s == ConnectState::Failed) { failed = true; break; }
+            if (s == ConnectState::Connected) break;
+            ::usleep(1000);
+        }
+        CHECK(failed);
+    }
+}
+
 }  // namespace
 
 int main() {
-    RUN(test_conf_roundtrip_and_fragmented_line);
+    RUN(test_conf_roundtrip_and_fragmented_read);
     RUN(test_data_tx_and_rx);
     RUN(test_disconnect_detected);
+    RUN(test_connect_to_missing_path_fails);
     std::fprintf(stderr, "test_loraham_posix_transport: all passed\n");
     return 0;
 }

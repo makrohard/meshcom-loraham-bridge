@@ -151,9 +151,22 @@ void XrServer::poll_once(int timeout_ms) {
     }
 }
 
+int XrServer::compute_timeout_ms() const {
+    const uint64_t now = clock_.now_ms();
+    uint64_t next = backend_.next_deadline_ms();
+    if (conn_) {
+        const uint64_t s = conn_->session().next_deadline_ms();
+        if (s < next) next = s;
+    }
+    if (next == UINT64_MAX) return 100;     // nothing pending: cap
+    if (next <= now) return 0;              // already due
+    const uint64_t d = next - now;
+    return d < 100 ? static_cast<int>(d) : 100;
+}
+
 void XrServer::run(const std::atomic<bool>& stop) {
     while (!stop.load()) {
-        poll_once(100);
+        poll_once(compute_timeout_ms());
     }
 }
 
