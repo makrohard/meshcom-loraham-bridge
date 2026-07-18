@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -18,12 +19,21 @@
 namespace mebridge {
 namespace loraham {
 
+namespace {
+// systemd deployments serve the daemon sockets under /run/loraham; direct/user starts under /tmp
+// (LORAHAM_SOCKET_DIR). Use the /run path when the socket already exists there, else the /tmp fallback.
+const char* loraham_sockpath(const char* runp, const char* tmpp) {
+    struct stat st;
+    return (::stat(runp, &st) == 0 && S_ISSOCK(st.st_mode)) ? runp : tmpp;
+}
+}  // namespace
+
 DaemonPaths default_daemon_paths() {
     DaemonPaths p;
-    p.data433 = kDataSocket433;
-    p.conf433 = kConfSocket433;
-    p.data868 = kDataSocket868;
-    p.conf868 = kConfSocket868;
+    p.data433 = loraham_sockpath("/run/loraham/lora433f.sock", kDataSocket433);
+    p.conf433 = loraham_sockpath("/run/loraham/loraconf433.sock", kConfSocket433);
+    p.data868 = loraham_sockpath("/run/loraham/lora868f.sock", kDataSocket868);
+    p.conf868 = loraham_sockpath("/run/loraham/loraconf868.sock", kConfSocket868);
     return p;
 }
 
