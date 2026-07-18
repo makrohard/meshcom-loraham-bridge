@@ -13,7 +13,28 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Debug)
 endif()
 
-add_compile_options(-Wall -Wextra -Wpedantic)
+add_compile_options(-Wall -Wextra -Wpedantic -Wformat-security)
+
+# --- hardening -------------------------------------------------------------
+# Cheap, portable exploit-mitigation defaults. Kept simple: stack canaries,
+# hardened libstdc++ bounds assertions, position-independent executables, full
+# RELRO + immediate binding, and a non-executable stack. _FORTIFY_SOURCE needs
+# an optimised build, so it is applied only to optimised configs (and never with
+# sanitizers, which intercept the same libc entry points).
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+add_compile_options(-fstack-protector-strong -D_GLIBCXX_ASSERTIONS)
+add_link_options(-pie -Wl,-z,relro,-z,now -Wl,-z,noexecstack)
+
+# Opt-in AddressSanitizer + UndefinedBehaviorSanitizer for tests/CI:
+#   cmake -B build -DMEBRIDGE_SANITIZE=ON && cmake --build build && ctest
+option(MEBRIDGE_SANITIZE "Build with AddressSanitizer + UndefinedBehaviorSanitizer" OFF)
+if(MEBRIDGE_SANITIZE)
+  add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer
+                      -fno-sanitize-recover=all)
+  add_link_options(-fsanitize=address,undefined)
+else()
+  add_compile_options($<$<CONFIG:Release,RelWithDebInfo,MinSizeRel>:-D_FORTIFY_SOURCE=2>)
+endif()
 
 find_package(OpenSSL REQUIRED)  # libcrypto: HMAC-SHA256, RAND_bytes, CRYPTO_memcmp
 

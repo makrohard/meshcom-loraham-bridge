@@ -65,9 +65,13 @@ uint32_t LorahamBackend::begin_configure(const extradio::RadioConfig& requested)
     }
 
     // Managed channel access + queued TX + per-TX result, then the radio config,
-    // then a status query. The control SETs produce no CONF reply (daemon
-    // v111: stdout only); only GET STATUS replies, so reply association is
-    // unambiguous. Each line must be its own (the daemon matches whole lines).
+    // then a status query. Under daemon v112 each SET is acknowledged on the CONF
+    // socket with a single "OK" line (a rejected SET answers "ERR <reason>");
+    // GET STATUS answers with its data line and no trailing OK. pump_conf()
+    // consumes the OK acks while awaiting the terminal STATUS and fails the
+    // configure on any ERR. (Daemon v111 sent no SET ack — the OK-consume path
+    // simply never triggers there, so this stays backward compatible.) Each
+    // command must be its own line (the daemon matches whole lines).
     conf_out_  = "SET TXMODE=MANAGED\n";
     conf_out_ += "SET TXQUEUE=1\n";
     conf_out_ += "SET TXRESULT=1\n";
@@ -104,11 +108,12 @@ void LorahamBackend::advance_configure() {
     }
     if (conf_out_off_ >= conf_out_.size()) awaiting_status_ = true;
 
-    // 2) Read the single STATUS reply (ignoring broadcasts).
+    // 2) Read the terminal STATUS reply (consuming SET "OK" acks, ignoring
+    //    broadcasts; a SET "ERR" reply fails the configure).
     if (!awaiting_status_) return;
     bool got = false, ready = false;
     if (!pump_conf(/*awaiting_status=*/true, &got, &ready)) {
-        config_fail("daemon CONF error/unexpected input during configure");
+        config_fail("daemon CONF error or rejected command during configure");
         return;
     }
     if (got) {
@@ -372,13 +377,33 @@ bool LorahamBackend::pump_conf(bool awaiting_status, bool* got_status, bool* sta
                 line.pop_back();
             if (line.empty()) continue;
             if (is_broadcast_line(line)) continue;  // documented unsolicited broadcast
+            if (awaiting_status) {
+                // Daemon v112 acknowledges every SET on the CONF socket with a
+                // single "OK" line; consume these while waiting for the terminal
+                // GET STATUS reply. (v111 sent no SET ack, so this never matches
+                // there — the change stays backward compatible.)
+                if (line == "OK") continue;
+                // A SET the daemon rejects answers "ERR <reason>". A rejected
+                // control/radio SET must fail the configure: the backend must not
+                // reach a TX-capable Ready state on an unapplied configuration.
+                if (starts_with(line, "ERR")) {
+                    std::fprintf(stderr,
+                        "[loraham] daemon rejected a configure command: %s\n",
+                        line.c_str());
+                    return false;
+                }
+            }
             if (starts_with(line, "STATUS")) {
                 if (!awaiting_status) return false;  // unsolicited STATUS: fatal
                 *got_status = true;
                 *status_ready = status_line_radio_ready(line);
                 return true;  // exactly one status accepted; keep any trailing bytes
             }
-            return false;  // any other non-broadcast reply-like line: fatal
+            // Any other non-broadcast reply-like line is fatal (incl. an "OK",
+            // "ERR", or "STATUS" seen operationally, when no reply is outstanding).
+            std::fprintf(stderr, "[loraham] unexpected CONF line during %s: %s\n",
+                         awaiting_status ? "configure" : "operation", line.c_str());
+            return false;
         }
         if (r < kReadChunk) break;  // drained for now
     }

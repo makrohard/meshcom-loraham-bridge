@@ -147,6 +147,17 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
+The build enables exploit-mitigation hardening by default (stack protector,
+`_GLIBCXX_ASSERTIONS`, PIE, full RELRO + `BIND_NOW`, non-executable stack;
+`_FORTIFY_SOURCE=2` on optimised builds). To run the suite under
+AddressSanitizer + UndefinedBehaviorSanitizer:
+
+```bash
+cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DMEBRIDGE_SANITIZE=ON
+cmake --build build-asan --parallel
+ctest --test-dir build-asan --output-on-failure
+```
+
 ## Run
 
 ```bash

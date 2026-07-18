@@ -6,6 +6,26 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Security
+- Build with exploit-mitigation hardening by default: stack canaries
+  (`-fstack-protector-strong`), hardened libstdc++ bounds assertions
+  (`-D_GLIBCXX_ASSERTIONS`), a position-independent executable, full RELRO +
+  immediate binding (`-Wl,-z,relro,-z,now`), a non-executable stack, and
+  `-Wformat-security`; `_FORTIFY_SOURCE=2` is applied to optimised builds. Added
+  an opt-in `-DMEBRIDGE_SANITIZE=ON` build (AddressSanitizer + UBSan) for
+  tests/CI; the full suite passes clean under it.
+- Bound the `--password-file` read to 4 KiB so a mistaken path (a huge file or a
+  device such as `/dev/zero`) cannot exhaust memory; oversized files are rejected.
+
+### Fixed
+- Validate `--port`: a non-numeric, out-of-range, or overflowing value now fails
+  closed (exit 2) instead of silently truncating (e.g. `99999` → `33465`) or
+  binding an OS-assigned ephemeral port. `0` remains valid (ephemeral by design).
+- Avoid a 100%-CPU busy-spin when `accept()` cannot consume a pending connection
+  due to resource exhaustion (`EMFILE`/`ENFILE`/`ENOBUFS`/`ENOMEM`): the
+  level-triggered listener stays readable, so the event loop now backs off briefly
+  instead of re-polling immediately until an fd frees up.
+
 ### Documentation
 - Record native validation of the real MeshCom `EXTERNAL_RADIO` firmware against
   this bridge under the Espressif ESP32 QEMU (connect + HMAC + control-plane
@@ -16,6 +36,16 @@ All notable changes to this project are documented here. The format is based on
   automatic restart; daemon-owned TX may still transmit after the bridge exits).
 
 ### Fixed
+- Parse the daemon v112 verbose CONF replies during configure. v112 acknowledges
+  every `SET` on the CONF socket with a bare `OK` line (a rejected `SET` answers
+  `ERR <reason>`); `GET STATUS` still answers with its data line and no trailing
+  `OK`. The backend previously assumed v111's silent `SET`s and treated the first
+  `OK` as unexpected input, failing and looping the configure even though the
+  daemon had applied the config and the radio was ready. `pump_conf()` now consumes
+  the `OK` acks while awaiting the terminal `STATUS`, fails the configure on any
+  `SET` `ERR` (the backend must not reach a TX-capable `Ready` state on an
+  unapplied config), and logs the offending line. The change is backward compatible
+  with v111 (no `SET` ack → the OK-consume path simply never triggers).
 - Preserve uncertain TX ownership across every teardown path. Previously only the
   bridge-side TX deadline entered draining; two paths lost ownership tracking while
   the daemon owned a complete TX frame: (1) a daemon link loss during `TxPending`

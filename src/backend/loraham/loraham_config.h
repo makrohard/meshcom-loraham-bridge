@@ -3,11 +3,12 @@
 //
 // The bridge is the XR configuration authority: it validates the requested
 // config against the daemon's known-accepted ranges (mirrored here from the
-// daemon's config_policy), and only then drives the daemon CONF socket. Because
-// daemon v111 CONF `SET` has no per-field acknowledgement, the adapter treats a
-// validated+sent config (with the radio reporting ready) as the effective
-// configuration and echoes the requested values back to the firmware. This pure
-// module performs no I/O and is fully host-testable.
+// daemon's config_policy), and only then drives the daemon CONF socket. Daemon
+// v112 acknowledges each `SET` with a bare "OK"/"ERR <reason>" (no per-field
+// read-back of the applied radio values), so the adapter treats a validated+sent
+// config that the daemon accepts (every SET "OK", radio reporting ready) as the
+// effective configuration and echoes the requested values back to the firmware.
+// This pure module performs no I/O and is fully host-testable.
 //
 // SPDX-License-Identifier: MIT
 

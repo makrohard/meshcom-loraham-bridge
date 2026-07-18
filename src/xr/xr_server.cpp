@@ -41,7 +41,9 @@ bool XrServer::listen(const std::string& bind_addr, uint16_t port, std::string& 
     if (fd < 0) { err = "socket() failed"; return false; }
 
     int one = 1;
-    ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    // Best-effort: a failure only risks a later bind() EADDRINUSE, which is
+    // checked and reported below, so the return value is intentionally ignored.
+    (void)::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
 
     struct sockaddr_in addr;
     std::memset(&addr, 0, sizeof(addr));
@@ -78,11 +80,23 @@ bool XrServer::listen(const std::string& bind_addr, uint16_t port, std::string& 
 }
 
 void XrServer::try_accept() {
+    // Brief backoff (ms) when accept() cannot consume a pending connection due to
+    // resource exhaustion, so we don't spin at 100% CPU on the level-triggered
+    // listener until an fd frees up.
+    constexpr int kAcceptBackoffMs = 20;
     for (;;) {
         int cfd = ::accept(listen_fd_, nullptr, nullptr);
         if (cfd < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return;
-            return;  // transient accept error; try again next loop
+            if (errno == EMFILE || errno == ENFILE ||
+                errno == ENOBUFS || errno == ENOMEM) {
+                // The pending connection is NOT consumed and keeps the listener
+                // readable, so poll() would return immediately every iteration.
+                // Sleep briefly to throttle the spin while degraded.
+                ::poll(nullptr, 0, kAcceptBackoffMs);
+                return;
+            }
+            return;  // other transient error (e.g. ECONNABORTED): try next loop
         }
         if (conn_) {
             // One active client only: refuse the newcomer without disturbing it.

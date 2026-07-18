@@ -34,9 +34,15 @@ public:
     bool data_send_fail = false;                 // data_send_some returns -1
 
     // --- CONF reply scripting ---
+    // Models daemon v112: every SET is acknowledged on the CONF socket with a
+    // single "OK\n" (or a scripted "ERR …\n"); GET STATUS answers with its data
+    // line and no trailing OK. Set set_replies_ok=false to model v111's silent SETs.
     std::string status_line = "STATUS RADIO=READY TX=0 CAD=0 TXMODE=MANAGED";
     std::string status_prefix;                   // broadcasts emitted before STATUS
-    bool auto_status = true;                      // queue status after GET STATUS seen
+    bool auto_status = true;                      // emit replies as commands are seen
+    bool set_replies_ok = true;                  // v112: each SET -> "OK\n" (v111: silent)
+    std::string err_for_set_substr;              // if a SET line contains this substring,
+    std::string err_reply = "ERR INVALID";       //   reply with err_reply instead of "OK"
     size_t conf_recv_chunk = 0;                  // 0 = serve all available
     bool conf_recv_disconnect = false;
 
@@ -59,7 +65,7 @@ public:
         if (!begin_connect_result) return false;
         connected = true;
         band = b;
-        status_queued_ = false;
+        conf_processed_ = 0;
         conf_in.clear();
         conf_blocked_ = data_blocked_ = false;
         return true;
@@ -76,7 +82,7 @@ public:
     int conf_send_some(const uint8_t* d, size_t len) override {
         size_t n = take_write(len, &conf_blocked_);
         if (n) conf_sent.append(reinterpret_cast<const char*>(d), n);
-        maybe_queue_status();
+        maybe_reply();
         return static_cast<int>(n);
     }
     int data_send_some(const uint8_t* d, size_t len) override {
@@ -108,7 +114,7 @@ public:
     void close() override { connected = false; }
 
 private:
-    bool status_queued_ = false;
+    size_t conf_processed_ = 0;   // bytes of conf_sent already answered
     bool conf_blocked_ = false;
     bool data_blocked_ = false;
 
@@ -118,11 +124,25 @@ private:
         *blocked = true;
         return len < throttle_chunk ? len : throttle_chunk;
     }
-    void maybe_queue_status() {
-        if (auto_status && !status_queued_ &&
-            conf_sent.find("GET STATUS\n") != std::string::npos) {
-            status_queued_ = true;
-            deliver_status();
+    // Answer each complete command line the backend has sent, in order, as
+    // daemon v112 does: SET -> "OK\n" (or a scripted ERR), GET STATUS -> status.
+    void maybe_reply() {
+        if (!auto_status) return;
+        size_t nl;
+        while ((nl = conf_sent.find('\n', conf_processed_)) != std::string::npos) {
+            std::string line = conf_sent.substr(conf_processed_, nl - conf_processed_);
+            conf_processed_ = nl + 1;
+            if (line.rfind("GET STATUS", 0) == 0) {
+                deliver_status();
+            } else if (line.rfind("SET ", 0) == 0) {
+                if (!err_for_set_substr.empty() &&
+                    line.find(err_for_set_substr) != std::string::npos) {
+                    conf_in += err_reply;
+                    conf_in += "\n";
+                } else if (set_replies_ok) {
+                    conf_in += "OK\n";           // v112 ack; v111 stays silent
+                }
+            }
         }
     }
 };

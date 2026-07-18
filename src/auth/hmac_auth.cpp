@@ -26,10 +26,18 @@ bool AuthConfig::from_password_file(const std::string& path, AuthConfig& out,
         err = "cannot open password file";  // path/content intentionally omitted
         return false;
     }
+    // A pre-shared key / passphrase is small; cap the read so a mistaken path
+    // (a huge file or a device like /dev/zero) cannot exhaust memory.
+    constexpr size_t kMaxPasswordFileBytes = 4096;
     std::vector<uint8_t> data;
     uint8_t chunk[512];
     size_t n;
     while ((n = std::fread(chunk, 1, sizeof(chunk), f)) > 0) {
+        if (data.size() + n > kMaxPasswordFileBytes) {
+            std::fclose(f);
+            err = "password file too large";
+            return false;
+        }
         data.insert(data.end(), chunk, chunk + n);
     }
     const bool read_err = std::ferror(f) != 0;

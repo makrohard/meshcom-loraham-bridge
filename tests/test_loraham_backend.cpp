@@ -229,6 +229,62 @@ void test_disconnect_during_configure_fails() {
     CHECK(!be.ready());
 }
 
+// Regression (daemon v112): each SET is acknowledged on the CONF socket with an
+// "OK" line before the terminal GET STATUS reply. The backend must consume those
+// acks and still configure — previously the first "OK" was treated as unexpected
+// input and looped the configure. Broadcasts interleaved for good measure.
+void test_configure_consumes_v112_set_acks() {
+    FakeDaemon ft; RecSink sink; ManualClock clk;
+    ft.set_replies_ok = true;                       // v112: OK per SET (also the default)
+    ft.status_prefix = "TX=0\nRSSI=-91.00\n";       // broadcasts before STATUS
+    LorahamBackend be(ft, clk);
+    be.set_sink(&sink);
+    be.start();
+    auto r = configure_now(be, sink, default_config());
+    CHECK(r.applied);
+    CHECK(be.ready());
+    // All four control/radio SETs and the status query were sent...
+    CHECK(ft.conf_sent.find("SET TXMODE=MANAGED\n") != std::string::npos);
+    CHECK(ft.conf_sent.find("SET MODE=LORA FREQ=433.900000 BW=125 SF=12") != std::string::npos);
+    CHECK(ft.conf_sent.find("GET STATUS\n") != std::string::npos);
+}
+
+// A SET the daemon rejects ("ERR <reason>") must fail the configure: the backend
+// must not reach a TX-capable Ready state on an unapplied configuration. Covers a
+// rejected radio SET (OK acks precede the ERR) and a rejected control SET (ERR
+// first, before any OK).
+void test_configure_fails_on_set_err() {
+    struct Case { const char* set_substr; const char* err; } cases[] = {
+        {"MODE=LORA", "ERR RADIO_NOT_READY"},   // radio SET rejected (after 3 OKs)
+        {"TXMODE",    "ERR INVALID"},            // first control SET rejected
+    };
+    for (auto& c : cases) {
+        FakeDaemon ft; RecSink sink; ManualClock clk;
+        ft.err_for_set_substr = c.set_substr;
+        ft.err_reply = c.err;
+        LorahamBackend be(ft, clk);
+        be.set_sink(&sink);
+        be.start();
+        auto r = configure_now(be, sink, default_config());
+        CHECK(!r.applied);
+        CHECK(!be.ready());
+        CHECK(!ft.connected);            // configure failure settles the link closed
+    }
+}
+
+// Backward compatibility with daemon v111, whose SETs produced no CONF ack: the
+// backend still configures from the lone STATUS reply.
+void test_configure_v111_silent_sets() {
+    FakeDaemon ft; RecSink sink; ManualClock clk;
+    ft.set_replies_ok = false;                      // v111: SETs are silent
+    LorahamBackend be(ft, clk);
+    be.set_sink(&sink);
+    be.start();
+    auto r = configure_now(be, sink, default_config());
+    CHECK(r.applied);
+    CHECK(be.ready());
+}
+
 void test_rx_forwarding() {
     FakeDaemon ft; RecSink sink; ManualClock clk;
     LorahamBackend be(ft, clk);
@@ -550,6 +606,9 @@ int main() {
     RUN(test_coalesced_conf_broadcasts_then_status);
     RUN(test_no_success_until_status_received);
     RUN(test_disconnect_during_configure_fails);
+    RUN(test_configure_consumes_v112_set_acks);
+    RUN(test_configure_fails_on_set_err);
+    RUN(test_configure_v111_silent_sets);
     RUN(test_rx_forwarding);
     RUN(test_rx_forwarding_fragmented);
     RUN(test_tx_success_and_one_in_flight);

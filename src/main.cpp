@@ -12,6 +12,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <atomic>
+#include <cerrno>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -72,7 +73,18 @@ int main(int argc, char** argv) {
         if (a == "--bind") {
             bind_addr = next("--bind");
         } else if (a == "--port") {
-            port = static_cast<uint16_t>(std::strtoul(next("--port"), nullptr, 10));
+            const char* v = next("--port");
+            char* end = nullptr;
+            errno = 0;
+            const unsigned long p = std::strtoul(v, &end, 10);
+            // Reject non-numeric, trailing garbage, overflow, or out-of-range so a
+            // typo fails closed instead of silently truncating (99999 -> 33465) or
+            // binding an ephemeral port. 0 stays valid (ephemeral, by design).
+            if (end == v || *end != '\0' || errno != 0 || p > 65535) {
+                std::fprintf(stderr, "error: --port must be an integer in [0, 65535]\n");
+                return 2;
+            }
+            port = static_cast<uint16_t>(p);
         } else if (a == "--password-file") {
             password_file = next("--password-file");
         } else if (a == "--backend") {
