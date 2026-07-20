@@ -449,6 +449,50 @@ void test_ping_pong() {
     CHECK(f.s.close_reason() == CloseReason::PongTimeout);
 }
 
+// A PONG whose RTT reaches half the pong timeout is accepted but counted late.
+void test_late_pong_warns() {
+    XrSession::Timeouts to = XrSession::default_timeouts();
+    to.ping_interval_ms = 1000;
+    to.pong_timeout_ms = 500;
+    Fix f(to);
+    bring_ready_open(f);
+
+    f.clk.advance(1000);
+    f.s.tick();
+    CHECK(count_type(drain(f.s), MSG_PING) == 1);
+    CHECK(f.s.awaiting_pong());
+
+    f.clk.advance(300);  // >= 250 (half the timeout), < 500 (deadline)
+    f.s.tick();
+    f.feed(build_pong());
+    CHECK(!f.s.closed());
+    CHECK(f.s.ready());
+    CHECK(f.s.last_pong_rtt_ms() == 300);
+    CHECK(f.s.late_pong_warns() == 1);
+}
+
+// A prompt PONG (RTT under half the timeout) records the RTT without a warn.
+void test_fast_pong_no_warn() {
+    XrSession::Timeouts to = XrSession::default_timeouts();
+    to.ping_interval_ms = 1000;
+    to.pong_timeout_ms = 500;
+    Fix f(to);
+    bring_ready_open(f);
+
+    f.clk.advance(1000);
+    f.s.tick();
+    CHECK(count_type(drain(f.s), MSG_PING) == 1);
+    CHECK(f.s.awaiting_pong());
+
+    f.clk.advance(100);  // < 250 (half the timeout)
+    f.s.tick();
+    f.feed(build_pong());
+    CHECK(!f.s.closed());
+    CHECK(f.s.ready());
+    CHECK(f.s.last_pong_rtt_ms() == 100);
+    CHECK(f.s.late_pong_warns() == 0);
+}
+
 // bonus: an unsolicited PONG (not awaiting) closes the session
 void test_unsolicited_pong() {
     Fix f;
@@ -481,6 +525,8 @@ int main() {
     RUN(test_tx_deadline_abandons_without_timeout);
     RUN(test_stale_completion_ignored);
     RUN(test_ping_pong);
+    RUN(test_late_pong_warns);
+    RUN(test_fast_pong_no_warn);
     RUN(test_unsolicited_pong);
     std::fprintf(stderr, "test_xr_session: all passed\n");
     return 0;

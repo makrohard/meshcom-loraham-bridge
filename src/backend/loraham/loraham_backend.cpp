@@ -9,6 +9,7 @@
 #include <cstring>
 
 #include "backend/loraham/loraham_config.h"
+#include "util/log.h"
 
 namespace mebridge {
 
@@ -32,26 +33,26 @@ uint32_t LorahamBackend::begin_configure(const extradio::RadioConfig& requested)
     // is already in flight: a fresh session must not reach a TX-capable state
     // until the daemon has provably cleared the previous operation.
     if (state_ == State::Faulted) {
-        std::fprintf(stderr, "[loraham] configure refused: backend faulted (restart required)\n");
+        logf("[loraham] configure refused: backend faulted (restart required)\n");
         return 0;
     }
     if (state_ == State::Draining) {
-        std::fprintf(stderr, "[loraham] configure refused: draining a prior TX\n");
+        logf("[loraham] configure refused: draining a prior TX\n");
         return 0;
     }
     if (state_ == State::Connecting || state_ == State::Configuring) {
-        std::fprintf(stderr, "[loraham] configure refused: a configuration is already in progress\n");
+        logf("[loraham] configure refused: a configuration is already in progress\n");
         return 0;
     }
     if (state_ == State::TxWriting || state_ == State::TxPending) {
-        std::fprintf(stderr, "[loraham] configure refused: a TX is in flight\n");
+        logf("[loraham] configure refused: a TX is in flight\n");
         return 0;
     }
 
     Band band;
     ConfigError err = validate_config(requested, &band);
     if (err != ConfigError::Ok) {
-        std::fprintf(stderr, "[loraham] config rejected: %s\n", config_error_name(err));
+        logf("[loraham] config rejected: %s\n", config_error_name(err));
         return 0;
     }
 
@@ -60,7 +61,7 @@ uint32_t LorahamBackend::begin_configure(const extradio::RadioConfig& requested)
 
     // Begin the non-blocking connect; the rest progresses in poll().
     if (!transport_.begin_connect(band)) {
-        std::fprintf(stderr, "[loraham] cannot start daemon connect\n");
+        logf("[loraham] cannot start daemon connect\n");
         return 0;
     }
 
@@ -128,7 +129,7 @@ void LorahamBackend::config_succeed() {
     conf_out_.clear();
     conf_out_off_ = 0;
     awaiting_status_ = false;
-    std::fprintf(stderr, "[loraham] configured; radio ready (control-plane)\n");
+    logf("[loraham] configured; radio ready (control-plane)\n");
     if (sink_) {
         ConfigureResult res;
         res.applied = true;
@@ -138,7 +139,7 @@ void LorahamBackend::config_succeed() {
 }
 
 void LorahamBackend::config_fail(const char* why) {
-    std::fprintf(stderr, "[loraham] configuration failed: %s\n", why);
+    logf("[loraham] configuration failed: %s\n", why);
     reset_link_unconfigured();  // settle: close socket, back to Disconnected
     if (sink_) {
         ConfigureResult res;  // applied = false
@@ -195,18 +196,16 @@ void LorahamBackend::abandon_pending_tx() {
         // not fabricate a terminal TX_RESULT.
         state_ = State::Draining;
         drain_deadline_at_ = clock_.now_ms() + drain_timeout_ms_;
-        std::fprintf(stderr,
-            "[loraham] XR abandoned a daemon-owned TX "
-            "-> draining (ownership retained, no result fabricated)\n");
+        logf("[loraham] XR abandoned a daemon-owned TX "
+             "-> draining (ownership retained, no result fabricated)\n");
         return;
     }
     if (state_ == State::TxWriting) {
         // Only a partial/incomplete frame was written: the daemon cannot
         // transmit it. Discard and reset the link (conservative; not draining,
         // because the daemon never took ownership of a complete frame).
-        std::fprintf(stderr,
-            "[loraham] XR abandoned a partially-written TX: incomplete frame "
-            "discarded (daemon never received a complete packet); resetting link\n");
+        logf("[loraham] XR abandoned a partially-written TX: incomplete frame "
+             "discarded (daemon never received a complete packet); resetting link\n");
         reset_link_unconfigured();
         return;
     }
@@ -387,9 +386,8 @@ bool LorahamBackend::pump_conf(bool awaiting_status, bool* got_status, bool* sta
                 // control/radio SET must fail the configure: the backend must not
                 // reach a TX-capable Ready state on an unapplied configuration.
                 if (starts_with(line, "ERR")) {
-                    std::fprintf(stderr,
-                        "[loraham] daemon rejected a configure command: %s\n",
-                        line.c_str());
+                    logf("[loraham] daemon rejected a configure command: %s\n",
+                         line.c_str());
                     return false;
                 }
             }
@@ -401,8 +399,8 @@ bool LorahamBackend::pump_conf(bool awaiting_status, bool* got_status, bool* sta
             }
             // Any other non-broadcast reply-like line is fatal (incl. an "OK",
             // "ERR", or "STATUS" seen operationally, when no reply is outstanding).
-            std::fprintf(stderr, "[loraham] unexpected CONF line during %s: %s\n",
-                         awaiting_status ? "configure" : "operation", line.c_str());
+            logf("[loraham] unexpected CONF line during %s: %s\n",
+                 awaiting_status ? "configure" : "operation", line.c_str());
             return false;
         }
         if (r < kReadChunk) break;  // drained for now
@@ -440,14 +438,14 @@ void LorahamBackend::handle_disconnect() {
     // a complete packet) and all non-TX states reset cleanly.
     const bool was_writing = (state_ == State::TxWriting);
     reset_link_unconfigured();
-    std::fprintf(stderr, "[loraham] daemon link lost%s\n",
-                 was_writing ? " (incomplete TX discarded; never daemon-owned)" : "");
+    logf("[loraham] daemon link lost%s\n",
+         was_writing ? " (incomplete TX discarded; never daemon-owned)" : "");
     if (sink_) sink_->on_backend_failure();
 }
 
 void LorahamBackend::resolve_drain(const char* why) {
     reset_link_unconfigured();  // ownership proven clear; release the socket
-    std::fprintf(stderr, "[loraham] drain complete: %s; daemon TX ownership cleared\n", why);
+    logf("[loraham] drain complete: %s; daemon TX ownership cleared\n", why);
 }
 
 void LorahamBackend::enter_fault(const char* why) {
@@ -460,7 +458,7 @@ void LorahamBackend::enter_fault(const char* why) {
     tx_out_.clear();
     tx_out_off_ = 0;
     awaiting_status_ = false;
-    std::fprintf(stderr, "[loraham] FAULTED: %s; TX disabled until restart\n", why);
+    logf("[loraham] FAULTED: %s; TX disabled until restart\n", why);
 }
 
 void LorahamBackend::reset_link_unconfigured() {

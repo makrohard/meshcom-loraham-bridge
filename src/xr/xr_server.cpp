@@ -15,6 +15,8 @@
 #include <cstdio>
 #include <cstring>
 
+#include "util/log.h"
+
 namespace mebridge {
 
 namespace {
@@ -106,7 +108,7 @@ void XrServer::try_accept() {
         if (!set_nonblocking(cfd)) { ::close(cfd); continue; }
         conn_ = std::make_unique<XrConnection>(cfd, backend_, auth_, clock_, to_,
                                                max_outbox_);
-        std::fprintf(stderr, "[bridge] XR client connected\n");
+        logf("[bridge] XR client connected\n");
     }
 }
 
@@ -115,10 +117,10 @@ void XrServer::drop_connection_if_finished() {
     // A session we closed carries a diagnostic reason; otherwise the peer closed.
     const XrSession& s = conn_->session();
     if (s.closed()) {
-        std::fprintf(stderr, "[bridge] XR client disconnected: %s\n",
-                     close_reason_name(s.close_reason()));
+        logf("[bridge] XR client disconnected: %s\n",
+             close_reason_name(s.close_reason()));
     } else {
-        std::fprintf(stderr, "[bridge] XR client disconnected: peer closed\n");
+        logf("[bridge] XR client disconnected: peer closed\n");
     }
     conn_.reset();
 }

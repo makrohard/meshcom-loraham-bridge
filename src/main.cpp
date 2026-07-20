@@ -21,6 +21,7 @@
 #include <string>
 
 #include "auth/hmac_auth.h"
+#include "util/log.h"
 #include "backend/fake_backend.h"
 #include "backend/loraham/loraham_backend.h"
 #include "backend/loraham/loraham_posix_transport.h"
@@ -47,6 +48,10 @@ void usage(const char* argv0) {
         "                        as the password (passwords are never taken on argv)\n"
         "  --backend NAME        radio backend: 'fake' (default) or 'loraham'\n"
         "                        (loraham connects to the local LoRaHAM daemon sockets)\n"
+        "  --ping-interval-ms N  keepalive PING interval, ms (default 15000)\n"
+        "  --pong-timeout-ms N   max wait for a PONG after a PING, ms (default 10000)\n"
+        "                        (raise both for slow/emulated guests, e.g. QEMU/TCG,\n"
+        "                        where the defaults flap with pong timeouts)\n"
         "  -v, --version         print version and exit\n",
         argv0);
 }
@@ -60,15 +65,30 @@ int main(int argc, char** argv) {
     uint16_t port = 7000;
     std::string password_file;
     std::string backend_name = "fake";
+    XrSession::Timeouts timeouts = XrSession::default_timeouts();
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&](const char* name) -> const char* {
             if (i + 1 >= argc) {
-                std::fprintf(stderr, "error: %s requires a value\n", name);
+                logf("error: %s requires a value\n", name);
                 std::exit(2);
             }
             return argv[++i];
+        };
+        // Strict like --port: reject junk/trailing garbage/overflow; range is
+        // [1, 3600000] ms (1 hour cap) so a typo fails closed.
+        auto next_ms = [&](const char* name) -> uint64_t {
+            const char* v = next(name);
+            char* end = nullptr;
+            errno = 0;
+            const unsigned long p = std::strtoul(v, &end, 10);
+            if (end == v || *end != '\0' || errno != 0 || p < 1 || p > 3600000) {
+                logf("error: %s must be an integer in [1, 3600000]\n", name);
+                usage(argv[0]);
+                std::exit(2);
+            }
+            return static_cast<uint64_t>(p);
         };
         if (a == "--bind") {
             bind_addr = next("--bind");
@@ -81,7 +101,7 @@ int main(int argc, char** argv) {
             // typo fails closed instead of silently truncating (99999 -> 33465) or
             // binding an ephemeral port. 0 stays valid (ephemeral, by design).
             if (end == v || *end != '\0' || errno != 0 || p > 65535) {
-                std::fprintf(stderr, "error: --port must be an integer in [0, 65535]\n");
+                logf("error: --port must be an integer in [0, 65535]\n");
                 return 2;
             }
             port = static_cast<uint16_t>(p);
@@ -89,6 +109,10 @@ int main(int argc, char** argv) {
             password_file = next("--password-file");
         } else if (a == "--backend") {
             backend_name = next("--backend");
+        } else if (a == "--ping-interval-ms") {
+            timeouts.ping_interval_ms = next_ms("--ping-interval-ms");
+        } else if (a == "--pong-timeout-ms") {
+            timeouts.pong_timeout_ms = next_ms("--pong-timeout-ms");
         } else if (a == "-v" || a == "--version") {
             std::printf("meshcom-loraham-bridge %s\n", MEBRIDGE_VERSION);
             return 0;
@@ -96,7 +120,7 @@ int main(int argc, char** argv) {
             usage(argv[0]);
             return 0;
         } else {
-            std::fprintf(stderr, "error: unknown argument '%s'\n", a.c_str());
+            logf("error: unknown argument '%s'\n", a.c_str());
             usage(argv[0]);
             return 2;
         }
@@ -106,7 +130,7 @@ int main(int argc, char** argv) {
     if (!password_file.empty()) {
         std::string err;
         if (!AuthConfig::from_password_file(password_file, auth, err)) {
-            std::fprintf(stderr, "error: %s\n", err.c_str());  // never prints content
+            logf("error: %s\n", err.c_str());  // never prints content
             return 1;
         }
     }
@@ -125,26 +149,24 @@ int main(int argc, char** argv) {
         loraham_transport = std::make_unique<loraham::PosixDaemonTransport>();
         backend = std::make_unique<LorahamBackend>(*loraham_transport, clock);
     } else {
-        std::fprintf(stderr, "error: unknown backend '%s' (use 'fake' or 'loraham')\n",
-                     backend_name.c_str());
+        logf("error: unknown backend '%s' (use 'fake' or 'loraham')\n",
+             backend_name.c_str());
         return 2;
     }
 
-    XrServer server(*backend, std::move(auth), clock, XrSession::default_timeouts(),
-                    kDefaultMaxOutbox);
+    XrServer server(*backend, std::move(auth), clock, timeouts, kDefaultMaxOutbox);
 
     std::string err;
     if (!server.listen(bind_addr, port, err)) {
-        std::fprintf(stderr, "error: listen failed: %s\n", err.c_str());
+        logf("error: listen failed: %s\n", err.c_str());
         return 1;
     }
 
-    std::fprintf(stderr,
-        "meshcom-loraham-bridge: listening on %s:%u, auth=%s, backend=%s\n",
-        bind_addr.c_str(), static_cast<unsigned>(server.bound_port()),
-        password_file.empty() ? "open" : "password", backend_name.c_str());
+    logf("meshcom-loraham-bridge: listening on %s:%u, auth=%s, backend=%s\n",
+         bind_addr.c_str(), static_cast<unsigned>(server.bound_port()),
+         password_file.empty() ? "open" : "password", backend_name.c_str());
 
     server.run(g_stop);
-    std::fprintf(stderr, "meshcom-loraham-bridge: shutting down\n");
+    logf("meshcom-loraham-bridge: shutting down\n");
     return 0;
 }

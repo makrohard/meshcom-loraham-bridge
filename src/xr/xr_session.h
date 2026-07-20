@@ -113,6 +113,8 @@ public:
     bool ready() const { return phase_ == Phase::Ready; }
     bool tx_in_flight() const { return tx_in_flight_; }
     bool awaiting_pong() const { return awaiting_pong_; }
+    uint64_t last_pong_rtt_ms() const { return last_pong_rtt_ms_; }
+    uint32_t late_pong_warns() const { return late_pong_warns_; }
 
 private:
     void handle_frame(const extradio::Frame& f);
@@ -162,6 +164,9 @@ private:
     bool awaiting_pong_ = false;
     uint64_t next_ping_at_ = 0;
     uint64_t pong_deadline_at_ = 0;
+    uint64_t ping_sent_at_ = 0;
+    uint64_t last_pong_rtt_ms_ = 0;
+    uint32_t late_pong_warns_ = 0;
 };
 
 }  // namespace mebridge

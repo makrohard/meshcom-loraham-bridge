@@ -6,6 +6,8 @@
 
 #include <cstring>
 
+#include "util/log.h"
+
 namespace mebridge {
 
 using namespace extradio;
@@ -290,6 +292,16 @@ void XrSession::handle_ready_frame(const extradio::Frame& f) {
         case MSG_PONG:
             if (!awaiting_pong_) { close(CloseReason::BadState); return; }  // unsolicited
             awaiting_pong_ = false;
+            last_pong_rtt_ms_ = clock_.now_ms() - ping_sent_at_;
+            // WARN when the RTT reaches half the pong timeout: the session is
+            // riding the deadline and will flap on any further slowdown (seen
+            // with QEMU/TCG guests that stall for tens of seconds).
+            if (last_pong_rtt_ms_ * 2 >= to_.pong_timeout_ms) {
+                ++late_pong_warns_;
+                logf("[bridge] XR pong late: rtt %llums (pong timeout %ums)\n",
+                     static_cast<unsigned long long>(last_pong_rtt_ms_),
+                     static_cast<unsigned>(to_.pong_timeout_ms));
+            }
             next_ping_at_ = clock_.now_ms() + to_.ping_interval_ms;
             return;
 
@@ -390,6 +402,7 @@ void XrSession::tick() {
     } else if (now >= next_ping_at_) {
         if (!emit(MSG_PING, 0, nullptr, 0)) return;
         awaiting_pong_ = true;
+        ping_sent_at_ = now;
         pong_deadline_at_ = now + to_.pong_timeout_ms;
     }
 }
