@@ -48,8 +48,12 @@ Backends (`--backend`):
 
 - `fake` (default) — a deterministic in-memory `RadioBackend` for tests and dry
   runs; no RF, no daemon I/O.
-- `loraham` — speaks the LoRaHAM daemon v111 local Unix sockets (framed DATA for
-  RX/TX, CONF text for configuration). The daemon runs **unchanged**. All daemon
+- `loraham` — speaks the LoRaHAM daemon's local Unix sockets, v111 **or later**
+  (framed DATA for RX/TX, CONF text for configuration). The daemon runs
+  **unchanged**. v112 acknowledges each `SET` on the CONF socket with a single
+  `OK` line and answers a rejected one with `ERR <reason>`; the backend consumes
+  those acks while it waits for the terminal `GET STATUS`, and v111 simply never
+  sends them, so one build serves both. All daemon
   connection, configuration, and I/O is **non-blocking and deadline-bounded**:
   connect uses `EINPROGRESS` + `getsockopt(SO_ERROR)`, sends are partial/resumable,
   reads are reassembled, and every phase has a deadline driven by the injected
@@ -173,7 +177,7 @@ daemon I/O.
 
 ### With the LoRaHAM daemon (real radio)
 
-Start the LoRaHAM daemon (v111) first so its sockets exist, then:
+Start the LoRaHAM daemon (v111 or later) first so its sockets exist, then:
 
 ```bash
 ./build/meshcom-loraham-bridge --port 7000 --backend loraham
