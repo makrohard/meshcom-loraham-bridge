@@ -22,6 +22,7 @@
 
 #include "auth/hmac_auth.h"
 #include "util/log.h"
+#include "util/rflog.h"
 #include "backend/fake_backend.h"
 #include "backend/loraham/loraham_backend.h"
 #include "backend/loraham/loraham_posix_transport.h"
@@ -42,12 +43,16 @@ constexpr size_t kDefaultMaxOutbox = 64 * 1024;  // bounded per-client output
 void usage(const char* argv0) {
     std::fprintf(stderr,
         "Usage: %s [--bind ADDR] [--port N] [--password-file PATH] [--backend NAME]\n"
+        "          [--rflog on|off --rflog-path PATH]\n"
         "  --bind ADDR           bind address (default 127.0.0.1)\n"
         "  --port N              TCP port (default 7000; 0 = ephemeral)\n"
         "  --password-file PATH  enable one-way HMAC auth using the file contents\n"
         "                        as the password (passwords are never taken on argv)\n"
         "  --backend NAME        radio backend: 'fake' (default) or 'loraham'\n"
         "                        (loraham connects to the local LoRaHAM daemon sockets)\n"
+        "  --rflog on|off        RF log: one line per frame the radio received or\n"
+        "                        sent (default off); 'on' needs --rflog-path\n"
+        "  --rflog-path PATH     absolute path of the RF log file\n"
         "  --ping-interval-ms N  keepalive PING interval, ms (default 15000)\n"
         "  --pong-timeout-ms N   max wait for a PONG after a PING, ms (default 10000)\n"
         "                        (raise both for slow/emulated guests, e.g. QEMU/TCG,\n"
@@ -65,6 +70,8 @@ int main(int argc, char** argv) {
     uint16_t port = 7000;
     std::string password_file;
     std::string backend_name = "fake";
+    bool rflog_on = false;
+    std::string rflog_path;
     XrSession::Timeouts timeouts = XrSession::default_timeouts();
 
     for (int i = 1; i < argc; ++i) {
@@ -109,6 +116,15 @@ int main(int argc, char** argv) {
             password_file = next("--password-file");
         } else if (a == "--backend") {
             backend_name = next("--backend");
+        } else if (a == "--rflog") {
+            const std::string v = next("--rflog");
+            if (v != "on" && v != "off") {
+                logf("error: --rflog must be 'on' or 'off'\n");
+                return 2;
+            }
+            rflog_on = (v == "on");
+        } else if (a == "--rflog-path") {
+            rflog_path = next("--rflog-path");
         } else if (a == "--ping-interval-ms") {
             timeouts.ping_interval_ms = next_ms("--ping-interval-ms");
         } else if (a == "--pong-timeout-ms") {
@@ -131,6 +147,20 @@ int main(int argc, char** argv) {
         std::string err;
         if (!AuthConfig::from_password_file(password_file, auth, err)) {
             logf("error: %s\n", err.c_str());  // never prints content
+            return 1;
+        }
+    }
+
+    // The RF log is opened before the event loop; 'on' without a path is a
+    // configuration error, not a silent "off".
+    if (rflog_on) {
+        if (rflog_path.empty()) {
+            logf("error: --rflog on needs --rflog-path <absolute path>\n");
+            return 2;
+        }
+        std::string rerr;
+        if (!rflog::open(rflog_path, rerr)) {
+            logf("error: %s\n", rerr.c_str());
             return 1;
         }
     }
@@ -162,11 +192,13 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    logf("meshcom-loraham-bridge: listening on %s:%u, auth=%s, backend=%s\n",
+    logf("meshcom-loraham-bridge: listening on %s:%u, auth=%s, backend=%s, rflog=%s\n",
          bind_addr.c_str(), static_cast<unsigned>(server.bound_port()),
-         password_file.empty() ? "open" : "password", backend_name.c_str());
+         password_file.empty() ? "open" : "password", backend_name.c_str(),
+         rflog::active() ? rflog_path.c_str() : "off");
 
     server.run(g_stop);
     logf("meshcom-loraham-bridge: shutting down\n");
+    rflog::close();
     return 0;
 }

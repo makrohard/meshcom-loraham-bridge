@@ -53,6 +53,7 @@ add_library(bridge_core STATIC
   src/backend/loraham/loraham_posix_transport.cpp
   src/backend/loraham/loraham_backend.cpp
   src/util/log.cpp
+  src/util/rflog.cpp
   src/xr/xr_session.cpp
   src/xr/xr_connection.cpp
   src/xr/xr_server.cpp)
@@ -81,3 +82,4 @@ add_bridge_test(test_loraham_config)
 add_bridge_test(test_loraham_framing)
 add_bridge_test(test_loraham_backend)
 add_bridge_test(test_loraham_posix_transport)
+add_bridge_test(test_rflog)

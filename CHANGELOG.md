@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- RF log: `--rflog on|off --rflog-path <absolute>` appends one line per frame
+  the radio received or sent, at the daemon boundary inside the LoRaHAM backend
+  rather than in the XR session. RX lines carry RSSI/SNR and are written before
+  the forwarding gate, so a frame heard while draining or without an owning
+  session still logs. TX lines carry an outcome and are written on the daemon's
+  `TX_RESULT`, not on `submit_tx`: `ok` after `TX_STATUS_OK` (a late result
+  learned while draining included), `unconfirmed` when the backend faults with a
+  daemon-owned frame whose result was never learned (link loss, drain timeout);
+  a `CHANNEL_BUSY`/error result writes nothing. Copy-truncate at 5 MB to
+  `<path>.1` on the same inode, so an external truncate is tolerated. `on`
+  without a path refuses to start; the path must be absolute. Default `off`.
+
 ### Security
 - Build with exploit-mitigation hardening by default: stack canaries
   (`-fstack-protector-strong`), hardened libstdc++ bounds assertions

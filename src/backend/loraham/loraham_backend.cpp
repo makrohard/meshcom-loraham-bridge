@@ -10,6 +10,7 @@
 
 #include "backend/loraham/loraham_config.h"
 #include "util/log.h"
+#include "util/rflog.h"
 
 namespace mebridge {
 
@@ -216,16 +217,19 @@ void LorahamBackend::abandon_pending_tx() {
 
 void LorahamBackend::dispatch(const Frame& f) {
     if (f.type == FRAMED_RX_PACKET) {
+        int16_t rssi = 0, snr = 0;
+        const uint8_t* rf = nullptr;
+        uint16_t rf_len = 0;
+        if (!decode_rx(f, rssi, snr, rf, rf_len)) return;
+        // The RF log records what the radio received, ahead of the forwarding
+        // gate below: a frame heard while draining or without a sink still logs.
+        rflog::rx(rssi, snr, rf, rf_len);
         // Forward RX only in receive-capable states; drop while draining (no
         // owning session) and otherwise. The sink also drops if its session is
         // not operational.
         const bool rx_ok = (state_ == State::Ready || state_ == State::TxWriting ||
                             state_ == State::TxPending);
         if (!rx_ok || !sink_) return;
-        int16_t rssi = 0, snr = 0;
-        const uint8_t* rf = nullptr;
-        uint16_t rf_len = 0;
-        if (!decode_rx(f, rssi, snr, rf, rf_len)) return;
         RxEvent ev;
         ev.rssi_cdbm = rssi;
         ev.snr_cdb = snr;
@@ -239,6 +243,13 @@ void LorahamBackend::dispatch(const Frame& f) {
         uint8_t status = 0, flags = 0;
         uint16_t seq = 0;
         if (!decode_tx_result(f, status, flags, seq)) return;
+        // TX boundary: the daemon confirmed the frame went out. submit_tx() only
+        // hands the frame to the daemon, so nothing is logged there; a result
+        // other than OK means the radio did not send it, so nothing is logged
+        // either. The frame is still held in tx_out_ (header + RF payload).
+        if (status == TX_STATUS_OK &&
+            (state_ == State::TxPending || state_ == State::Draining))
+            log_tx_outcome("ok");
         if (state_ == State::TxPending) {
             state_ = State::Ready;
             tx_out_.clear();
@@ -448,7 +459,15 @@ void LorahamBackend::resolve_drain(const char* why) {
     logf("[loraham] drain complete: %s; daemon TX ownership cleared\n", why);
 }
 
+void LorahamBackend::log_tx_outcome(const char* outcome) {
+    if (tx_out_.size() <= kFramedHeaderLen) return;
+    rflog::tx(outcome, tx_out_.data() + kFramedHeaderLen, tx_out_.size() - kFramedHeaderLen);
+}
+
 void LorahamBackend::enter_fault(const char* why) {
+    // Every path here leaves a complete frame with the daemon whose result was
+    // never learned: it may have gone out. Never log that as not radiated.
+    log_tx_outcome("unconfirmed");
     transport_.close();
     state_ = State::Faulted;
     parser_reset(parser_);

@@ -187,6 +187,29 @@ The band (433/868) is selected automatically from the frequency the firmware
 requests. Note: the daemon caps TX power at 0–20 dBm, so a requested power above
 20 dBm is rejected — keep the firmware's configured power ≤ 20 dBm.
 
+### RF log
+
+```bash
+./build/meshcom-loraham-bridge --backend loraham --rflog on --rflog-path /var/log/rf-meshcom.log
+```
+
+One line per frame the radio received or sent, written at the daemon boundary
+(what the radio did, not what the XR client consumed):
+
+```text
+<utc> RX rssi=<dBm> snr=<dB> len=<n> hex=<..> ascii="<..>"
+<utc> TX rssi=- snr=- len=<n> outcome=<ok|unconfirmed> hex=<..> ascii="<..>"
+```
+
+An RX line is written before the forwarding gate, so a frame heard while no
+session owns the backend still logs. A TX line is written on the daemon's
+`TX_RESULT`, not when the frame is handed over: `ok` after `TX_STATUS_OK`,
+`unconfirmed` when the backend faults with a daemon-owned frame whose result was
+never learned (it may have gone out); a `CHANNEL_BUSY` or error result writes
+nothing, because the radio did not send it. The file is copy-truncated at 5 MB
+into `<path>.1` on the same inode, so truncating it externally is safe. The path
+must be absolute; `--rflog on` without a path is refused. Default `off`.
+
 ## Security defaults
 
 - Binds **`127.0.0.1`** by default; expose it only on a trusted private interface.
@@ -217,7 +240,8 @@ src/
   backend/loraham/      LoRaHAM daemon adapter: config translate, framing,
                         POSIX transport, backend
   auth/                 HMAC-SHA256 one-way auth (OpenSSL libcrypto)
-  util/                 injectable clock, bounded byte buffer
+  util/                 injectable clock, bounded byte buffer, stderr log,
+                        RF log writer
 third_party/
   external_radio_protocol/   vendored XR codec (see THIRD_PARTY_NOTICES.md)
 tests/                  CTest host tests (no hardware)

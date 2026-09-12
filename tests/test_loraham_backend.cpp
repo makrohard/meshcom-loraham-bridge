@@ -7,8 +7,10 @@
 //
 // SPDX-License-Identifier: MIT
 
+#include <cstdio>
 #include <cstring>
 #include <deque>
+#include <unistd.h>
 #include <string>
 #include <vector>
 
@@ -18,6 +20,7 @@
 #include "fake_daemon.h"
 #include "test_helpers.h"
 #include "util/clock.h"
+#include "util/rflog.h"
 
 using namespace mebridge;
 using mebridge::loraham::Band;
@@ -592,6 +595,124 @@ void test_drain_timeout_faults() {
     CHECK(be.begin_configure(default_config()) == 0);
 }
 
+// --- RF log: the radio boundary, not the XR session ------------------------
+
+struct TempRfLog {
+    char dir[32] = "/tmp/mebridge-be-XXXXXX";
+    std::string path;
+    TempRfLog() {
+        CHECK(::mkdtemp(dir) != nullptr);
+        path = std::string(dir) + "/rf-meshcom.log";
+        std::string err;
+        CHECK(rflog::open(path, err));
+    }
+    ~TempRfLog() {
+        rflog::close();
+        ::unlink(path.c_str());
+        ::rmdir(dir);
+    }
+    std::vector<std::string> lines() const {
+        std::vector<std::string> out;
+        FILE* f = std::fopen(path.c_str(), "r");
+        CHECK(f != nullptr);
+        char buf[2048];
+        while (std::fgets(buf, sizeof(buf), f)) out.emplace_back(buf);
+        std::fclose(f);
+        return out;
+    }
+};
+
+void test_rflog_rx_logged_before_the_forwarding_gate() {
+    TempRfLog rl;
+    FakeDaemon ft; RecSink sink; ManualClock clk;
+    LorahamBackend be(ft, clk);
+    to_draining(be, sink);  // no owning session: RX is not forwarded here
+
+    const uint8_t rf[3] = {0xAA, 0x42, 0x0A};
+    uint8_t frame[64];
+    size_t n = loraham::encode_rx_packet(frame, sizeof(frame), -9150, 275, rf, 3);
+    ft.push_data(frame, n);
+    be.poll();
+    CHECK(sink.rx.empty());                 // dropped by the gate...
+    auto lines = rl.lines();
+    CHECK(lines.size() == 1);               // ...but the radio did receive it
+    CHECK(lines[0].find(" RX rssi=-91.50 snr=2.75 len=3 hex=aa420a ascii=\".B.\"\n")
+          != std::string::npos);
+}
+
+void test_rflog_tx_ok_on_result_not_on_submit() {
+    TempRfLog rl;
+    FakeDaemon ft; RecSink sink; ManualClock clk;
+    LorahamBackend be(ft, clk);
+    be.set_sink(&sink);
+    be.start();
+    CHECK(configure_now(be, sink, default_config()).applied);
+
+    CHECK(be.submit_tx((const uint8_t*)"hi", 2));
+    CHECK(rl.lines().empty());              // handed to the daemon: not sent yet
+
+    uint8_t res[16];
+    size_t n = loraham::encode_tx_result(res, sizeof(res), loraham::TX_STATUS_OK, 0, 1);
+    ft.push_data(res, n);
+    be.poll();
+    auto lines = rl.lines();
+    CHECK(lines.size() == 1);
+    CHECK(lines[0].find(" TX rssi=- snr=- len=2 outcome=ok hex=6869 ascii=\"hi\"\n")
+          != std::string::npos);
+
+    // A result other than OK means the radio did not send it: no line.
+    CHECK(be.submit_tx((const uint8_t*)"no", 2));
+    n = loraham::encode_tx_result(res, sizeof(res), loraham::TX_STATUS_CHANNEL_BUSY, 0, 2);
+    ft.push_data(res, n);
+    be.poll();
+    CHECK(sink.tx.size() == 2);
+    CHECK(rl.lines().size() == 1);
+}
+
+void test_rflog_late_drain_result_and_fault_outcomes() {
+    {
+        TempRfLog rl;
+        FakeDaemon ft; RecSink sink; ManualClock clk;
+        LorahamBackend be(ft, clk);
+        to_draining(be, sink);
+        uint8_t res[16];
+        size_t n = loraham::encode_tx_result(res, sizeof(res), loraham::TX_STATUS_OK, 0, 1);
+        ft.push_data(res, n);
+        be.poll();
+        CHECK(!be.draining());
+        auto lines = rl.lines();               // went out, even if no client learns it
+        CHECK(lines.size() == 1);
+        CHECK(lines[0].find(" outcome=ok hex=6869 ") != std::string::npos);
+    }
+    {
+        TempRfLog rl;
+        FakeDaemon ft; RecSink sink; ManualClock clk;
+        LorahamBackend be(ft, clk, 2000, 30000);
+        to_draining(be, sink);
+        clk.advance(30001);                    // result never learned
+        be.poll();
+        CHECK(be.faulted());
+        auto lines = rl.lines();
+        CHECK(lines.size() == 1);
+        CHECK(lines[0].find(" outcome=unconfirmed hex=6869 ") != std::string::npos);
+    }
+    {
+        TempRfLog rl;
+        FakeDaemon ft; RecSink sink; ManualClock clk;
+        LorahamBackend be(ft, clk);
+        be.set_sink(&sink);
+        be.start();
+        CHECK(configure_now(be, sink, default_config()).applied);
+        CHECK(be.submit_tx((const uint8_t*)"hi", 2));
+        ft.recv_disconnect = true;             // daemon-owned frame, link lost
+        be.poll();
+        CHECK(be.faulted());
+        auto lines = rl.lines();
+        CHECK(lines.size() == 1);
+        CHECK(lines[0].find(" outcome=unconfirmed ") != std::string::npos);
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -624,6 +745,9 @@ int main() {
     RUN(test_drain_resolves_on_late_result_then_recovers);
     RUN(test_drain_transport_death_faults);
     RUN(test_drain_timeout_faults);
+    RUN(test_rflog_rx_logged_before_the_forwarding_gate);
+    RUN(test_rflog_tx_ok_on_result_not_on_submit);
+    RUN(test_rflog_late_drain_result_and_fault_outcomes);
     std::fprintf(stderr, "test_loraham_backend: all passed\n");
     return 0;
 }

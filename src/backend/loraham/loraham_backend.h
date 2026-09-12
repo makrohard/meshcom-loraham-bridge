@@ -130,6 +130,7 @@ private:
     void handle_disconnect();
     void resolve_drain(const char* why);  // ownership cleared while Draining
     void enter_fault(const char* why);    // unrecoverable: TX disabled
+    void log_tx_outcome(const char* outcome);  // RF log line from the held frame
     void reset_link_unconfigured();       // close + back to Disconnected
     // TX write pump (bridge-owned until the whole frame is out)
     TxFlush pump_tx_write();
