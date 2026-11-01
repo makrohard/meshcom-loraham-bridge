@@ -37,6 +37,22 @@ DaemonPaths default_daemon_paths() {
     return p;
 }
 
+DaemonPaths instance_daemon_paths(const std::string& data_socket, const std::string& conf_socket) {
+    DaemonPaths p = default_daemon_paths();
+    if (data_socket.empty() || conf_socket.empty()) return p;
+    p.data433 = p.data868 = data_socket;
+    p.conf433 = p.conf868 = conf_socket;
+    return p;
+}
+
+std::string socket_path_error(const std::string& path) {
+    if (path.empty()) return "is empty";
+    if (path.size() >= sizeof(((struct sockaddr_un*)0)->sun_path))
+        return "is " + std::to_string(path.size()) + " bytes; a socket path must be shorter than " +
+               std::to_string(sizeof(((struct sockaddr_un*)0)->sun_path)) + " bytes";
+    return "";
+}
+
 PosixDaemonTransport::PosixDaemonTransport(DaemonPaths paths)
     : paths_(std::move(paths)) {}
 

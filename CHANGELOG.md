@@ -6,7 +6,11 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-01
+
 ### Added
+- `--data-socket PATH --conf-socket PATH` (together, `--backend loraham`): one radio's
+  daemon sockets, used for either band; absent, the per-band defaults.
 - RF log: `--rflog on|off --rflog-path <absolute>` appends one line per frame
   the radio received or sent, at the daemon boundary inside the LoRaHAM backend
   rather than in the XR session. RX lines carry RSSI/SNR and are written before

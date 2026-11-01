@@ -259,11 +259,51 @@ void test_connect_to_missing_path_fails() {
 
 }  // namespace
 
+// --data-socket / --conf-socket name one radio: the given pair serves either band (the daemon refuses a band
+// its radio does not serve; a refused SET fails the configure, test_loraham_backend's test_configure_fails_on_set_err).
+void test_instance_paths_serve_either_band_through_the_given_pair() {
+    for (Band band : {Band::Band433, Band::Band868}) {
+        TempPaths tp;
+        int ldata = make_listener(tp.data);
+        int lconf = make_listener(tp.conf);
+        PosixDaemonTransport t(instance_daemon_paths(tp.data, tp.conf));
+        connect_transport(t, band);
+        int sdata = accept_one(ldata);
+        int sconf = accept_one(lconf);
+        const char* cmd = band == Band::Band433 ? "SET FREQ=433.900000\n" : "SET FREQ=869.525000\n";
+        send_all_conf(t, cmd);
+        CHECK(recv_str(sconf, std::strlen(cmd)) == cmd);   // the given CONF socket, for either band
+        ::close(sdata);
+        ::close(sconf);
+        ::close(ldata);
+        ::close(lconf);
+    }
+}
+
+void test_instance_paths_keep_the_defaults_without_a_pair() {
+    const DaemonPaths d = default_daemon_paths();
+    for (const DaemonPaths& p : {instance_daemon_paths("", ""), instance_daemon_paths("", "/run/loraham/loraconf-r2.sock"),
+                                 instance_daemon_paths("/run/loraham/loraf-r2.sock", "")}) {
+        CHECK(p.data433 == d.data433 && p.conf433 == d.conf433);
+        CHECK(p.data868 == d.data868 && p.conf868 == d.conf868);
+    }
+}
+
+void test_socket_path_errors() {
+    CHECK(socket_path_error("/run/loraham/loraf-r2.sock").empty());
+    CHECK(!socket_path_error("").empty());
+    CHECK(socket_path_error(std::string(107, 'a')).empty());
+    CHECK(!socket_path_error(std::string(108, 'a')).empty());
+}
+
 int main() {
     RUN(test_conf_roundtrip_and_fragmented_read);
     RUN(test_data_tx_and_rx);
     RUN(test_disconnect_detected);
     RUN(test_connect_to_missing_path_fails);
+    RUN(test_instance_paths_serve_either_band_through_the_given_pair);
+    RUN(test_instance_paths_keep_the_defaults_without_a_pair);
+    RUN(test_socket_path_errors);
     std::fprintf(stderr, "test_loraham_posix_transport: all passed\n");
     return 0;
 }
