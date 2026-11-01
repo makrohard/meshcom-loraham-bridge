@@ -187,13 +187,10 @@ The band (433/868) is selected automatically from the frequency the firmware
 requests. Note: the daemon caps TX power at 0–20 dBm, so a requested power above
 20 dBm is rejected — keep the firmware's configured power ≤ 20 dBm.
 
-One radio of a daemon started per radio (`--id <rid>`): name its two sockets
-together (the paths below are an example; the daemon's own naming decides them).
-
-```bash
-./build/meshcom-loraham-bridge --port 7000 --backend loraham \
-    --data-socket /run/loraham/loraf-r2.sock --conf-socket /run/loraham/loraconf-r2.sock
-```
+One radio of a daemon started per radio (`--id <rid>`): `--data-socket PATH
+--conf-socket PATH` name its two sockets, together. A runnable example comes
+with LHPC's per-radio cutover (L5), restored there with its proof on a real host
+and a second environment.
 
 The pair serves whichever band the firmware selects; a band that radio does not
 serve is refused by its daemon and the configure fails (not yet verified with a
