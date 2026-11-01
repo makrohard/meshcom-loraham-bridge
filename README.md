@@ -187,6 +187,21 @@ The band (433/868) is selected automatically from the frequency the firmware
 requests. Note: the daemon caps TX power at 0–20 dBm, so a requested power above
 20 dBm is rejected — keep the firmware's configured power ≤ 20 dBm.
 
+One radio of a daemon started per radio (`--id <rid>`): name its two sockets
+together (the paths below are an example; the daemon's own naming decides them).
+
+```bash
+./build/meshcom-loraham-bridge --port 7000 --backend loraham \
+    --data-socket /run/loraham/loraf-r2.sock --conf-socket /run/loraham/loraconf-r2.sock
+```
+
+The pair serves whichever band the firmware selects; a band that radio does not
+serve is refused by its daemon and the configure fails (not yet verified with a
+daemon started per radio). The two options come together: one alone would split
+the bridge across two daemons and is refused. An empty path,
+a path of 108 bytes or more, or the options without `--backend loraham` are
+refused with exit code 2, as every argument error.
+
 ### RF log
 
 ```bash

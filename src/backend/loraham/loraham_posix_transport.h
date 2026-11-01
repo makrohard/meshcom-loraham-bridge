@@ -25,6 +25,15 @@ struct DaemonPaths {
 };
 DaemonPaths default_daemon_paths();
 
+// The paths for one radio instance (--data-socket / --conf-socket, given together): the pair serves both bands.
+// One daemon serves one radio; a band its radio does not serve is for that daemon to refuse (a SET answering
+// "ERR …" fails the configure; with a daemon started per radio not yet verified). With either path empty, the
+// per-band defaults.
+DaemonPaths instance_daemon_paths(const std::string& data_socket, const std::string& conf_socket);
+
+// "" when `path` can name an AF_UNIX socket; else the reason (empty, or 108 bytes or more for sun_path).
+std::string socket_path_error(const std::string& path);
+
 class PosixDaemonTransport final : public DaemonTransport {
 public:
     explicit PosixDaemonTransport(DaemonPaths paths = default_daemon_paths());

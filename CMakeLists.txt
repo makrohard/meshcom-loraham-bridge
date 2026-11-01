@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 cmake_minimum_required(VERSION 3.16)
-project(meshcom_loraham_bridge VERSION 0.1.0 LANGUAGES CXX)
+project(meshcom_loraham_bridge VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -83,3 +83,8 @@ add_bridge_test(test_loraham_framing)
 add_bridge_test(test_loraham_backend)
 add_bridge_test(test_loraham_posix_transport)
 add_bridge_test(test_rflog)
+
+# The command line, run as the built binary.
+add_bridge_test(test_cli)
+target_compile_definitions(test_cli PRIVATE MEBRIDGE_BINARY="$<TARGET_FILE:meshcom-loraham-bridge>")
+add_dependencies(test_cli meshcom-loraham-bridge)

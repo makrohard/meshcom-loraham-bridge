@@ -44,6 +44,7 @@ void usage(const char* argv0) {
     std::fprintf(stderr,
         "Usage: %s [--bind ADDR] [--port N] [--password-file PATH] [--backend NAME]\n"
         "          [--rflog on|off --rflog-path PATH]\n"
+        "          [--data-socket PATH] [--conf-socket PATH]\n"
         "  --bind ADDR           bind address (default 127.0.0.1)\n"
         "  --port N              TCP port (default 7000; 0 = ephemeral)\n"
         "  --password-file PATH  enable one-way HMAC auth using the file contents\n"
@@ -53,6 +54,10 @@ void usage(const char* argv0) {
         "  --rflog on|off        RF log: one line per frame the radio received or\n"
         "                        sent (default off); 'on' needs --rflog-path\n"
         "  --rflog-path PATH     absolute path of the RF log file\n"
+        "  --data-socket PATH    with --backend loraham: the radio's framed DATA socket\n"
+        "  --conf-socket PATH    with --backend loraham: the radio's CONF socket\n"
+        "                        (both together; the pair serves either band;\n"
+        "                        without them the per-band default sockets are used)\n"
         "  --ping-interval-ms N  keepalive PING interval, ms (default 15000)\n"
         "  --pong-timeout-ms N   max wait for a PONG after a PING, ms (default 10000)\n"
         "                        (raise both for slow/emulated guests, e.g. QEMU/TCG,\n"
@@ -72,6 +77,8 @@ int main(int argc, char** argv) {
     std::string backend_name = "fake";
     bool rflog_on = false;
     std::string rflog_path;
+    std::string data_socket;
+    std::string conf_socket;
     XrSession::Timeouts timeouts = XrSession::default_timeouts();
 
     for (int i = 1; i < argc; ++i) {
@@ -125,6 +132,14 @@ int main(int argc, char** argv) {
             rflog_on = (v == "on");
         } else if (a == "--rflog-path") {
             rflog_path = next("--rflog-path");
+        } else if (a == "--data-socket" || a == "--conf-socket") {
+            const std::string v = next(a.c_str());
+            const std::string why = loraham::socket_path_error(v);
+            if (!why.empty()) {
+                logf("error: %s %s\n", a.c_str(), why.c_str());
+                return 2;
+            }
+            (a == "--data-socket" ? data_socket : conf_socket) = v;
         } else if (a == "--ping-interval-ms") {
             timeouts.ping_interval_ms = next_ms("--ping-interval-ms");
         } else if (a == "--pong-timeout-ms") {
@@ -140,6 +155,19 @@ int main(int argc, char** argv) {
             usage(argv[0]);
             return 2;
         }
+    }
+
+    // The two name one radio's sockets and come together: one alone would split the bridge across two
+    // daemons (that radio's and a per-band default), so it is refused.
+    if (data_socket.empty() != conf_socket.empty()) {
+        logf("error: %s needs %s (both name one radio's sockets)\n",
+             data_socket.empty() ? "--conf-socket" : "--data-socket",
+             data_socket.empty() ? "--data-socket" : "--conf-socket");
+        return 2;
+    }
+    if ((!data_socket.empty() || !conf_socket.empty()) && backend_name != "loraham") {
+        logf("error: --data-socket/--conf-socket need --backend loraham\n");
+        return 2;
     }
 
     AuthConfig auth;  // open mode by default
@@ -176,7 +204,8 @@ int main(int argc, char** argv) {
     if (backend_name == "fake") {
         backend = std::make_unique<FakeBackend>();
     } else if (backend_name == "loraham") {
-        loraham_transport = std::make_unique<loraham::PosixDaemonTransport>();
+        loraham_transport = std::make_unique<loraham::PosixDaemonTransport>(
+            loraham::instance_daemon_paths(data_socket, conf_socket));
         backend = std::make_unique<LorahamBackend>(*loraham_transport, clock);
     } else {
         logf("error: unknown backend '%s' (use 'fake' or 'loraham')\n",
