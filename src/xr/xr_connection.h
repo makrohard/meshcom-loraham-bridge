@@ -21,7 +21,7 @@ class XrConnection {
 public:
     XrConnection(int fd, RadioBackend& backend, const AuthConfig& auth,
                  const Clock& clock, const XrSession::Timeouts& to,
-                 size_t max_outbox);
+                 size_t max_outbox, int max_power_dbm);
     ~XrConnection();
 
     XrConnection(const XrConnection&) = delete;

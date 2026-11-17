@@ -28,9 +28,9 @@ bool set_nonblocking(int fd) {
 }  // namespace
 
 XrServer::XrServer(RadioBackend& backend, AuthConfig auth, const Clock& clock,
-                   const XrSession::Timeouts& to, size_t max_outbox)
+                   const XrSession::Timeouts& to, size_t max_outbox, int max_power_dbm)
     : backend_(backend), auth_(std::move(auth)), clock_(clock), to_(to),
-      max_outbox_(max_outbox) {}
+      max_outbox_(max_outbox), max_power_dbm_(max_power_dbm) {}
 
 XrServer::~XrServer() {
     conn_.reset();
@@ -107,7 +107,7 @@ void XrServer::try_accept() {
         }
         if (!set_nonblocking(cfd)) { ::close(cfd); continue; }
         conn_ = std::make_unique<XrConnection>(cfd, backend_, auth_, clock_, to_,
-                                               max_outbox_);
+                                               max_outbox_, max_power_dbm_);
         logf("[bridge] XR client connected\n");
     }
 }

@@ -39,8 +39,8 @@ struct Fix {
     ManualClock clk{1000};
     AuthConfig auth;  // open mode
     XrSession s;
-    explicit Fix(XrSession::Timeouts to = XrSession::default_timeouts())
-        : s(be, auth, clk, to, kBigOutbox) {
+    explicit Fix(XrSession::Timeouts to = XrSession::default_timeouts(), int max_power_dbm = 20)
+        : s(be, auth, clk, to, kBigOutbox, max_power_dbm) {
         be.set_sink(&s);
         s.open();
     }
@@ -122,7 +122,7 @@ void test_password_auth() {
         FakeBackend be;
         ManualClock clk{1000};
         AuthConfig auth = AuthConfig::from_password_bytes(pw, sizeof(pw));
-        XrSession s(be, auth, clk, XrSession::default_timeouts(), kBigOutbox);
+        XrSession s(be, auth, clk, XrSession::default_timeouts(), kBigOutbox, 20);
         be.set_sink(&s);
         s.open();
         s.feed(build_hello().data(), build_hello().size());
@@ -144,7 +144,7 @@ void test_password_auth() {
         FakeBackend be;
         ManualClock clk{1000};
         AuthConfig auth = AuthConfig::from_password_bytes(pw, sizeof(pw));
-        XrSession s(be, auth, clk, XrSession::default_timeouts(), kBigOutbox);
+        XrSession s(be, auth, clk, XrSession::default_timeouts(), kBigOutbox, 20);
         be.set_sink(&s);
         s.open();
         s.feed(build_hello().data(), build_hello().size());
@@ -229,6 +229,55 @@ void test_config_backend_reports_failure() {
     CHECK(cr != nullptr && cr->payload[0] != CFG_OK);
     CHECK(f.s.closed());
     CHECK(f.s.close_reason() == CloseReason::ConfigFailed);
+}
+
+// 7e. the TX power ceiling (--max-power): a CONFIGURE asking for more power is refused before the backend sees it
+// (CFG_UNSUPPORTED, ConfigFailed: no radio, so no TX); at or below the ceiling it reaches Ready. A node that lowers
+// its power reconnects with a fresh CONFIGURE and gets its radio.
+void test_power_ceiling() {
+    auto configure_with = [](Fix& f, int power) {
+        f.feed(build_hello());
+        (void)drain(f.s);
+        auto cfg = default_config();
+        cfg.tx_power_dbm = static_cast<int8_t>(power);
+        f.be.script_config_effective(cfg);
+        f.feed(build_configure(cfg));
+        f.be.poll();
+        return drain(f.s);
+    };
+    {   // above: refused, the backend never configured
+        Fix f(XrSession::default_timeouts(), 10);
+        auto out = configure_with(f, 14);
+        const Frame* cr = find_type(out, MSG_CONFIG_RESULT);
+        CHECK(cr != nullptr && cr->len == 1 && cr->payload[0] == CFG_UNSUPPORTED);
+        CHECK(f.s.closed());
+        CHECK(f.s.close_reason() == CloseReason::ConfigFailed);
+        CHECK(!f.be.ready());
+        // the node lowers its power: the next session's CONFIGURE at the ceiling gets the radio
+        f.s.open();
+        auto again = configure_with(f, 10);
+        const Frame* ok = find_type(again, MSG_CONFIG_RESULT);
+        CHECK(ok != nullptr && ok->payload[0] == CFG_OK);
+        CHECK(f.s.ready());
+    }
+    {   // at the ceiling
+        Fix f(XrSession::default_timeouts(), 14);
+        auto out = configure_with(f, 14);
+        CHECK(find_type(out, MSG_CONFIG_RESULT)->payload[0] == CFG_OK);
+        CHECK(f.s.ready());
+    }
+    {   // below the ceiling
+        Fix f(XrSession::default_timeouts(), 17);
+        auto out = configure_with(f, 2);
+        CHECK(find_type(out, MSG_CONFIG_RESULT)->payload[0] == CFG_OK);
+        CHECK(f.s.ready());
+    }
+    {   // 0 is a ceiling too: any power above it is refused
+        Fix f(XrSession::default_timeouts(), 0);
+        auto out = configure_with(f, 1);
+        CHECK(find_type(out, MSG_CONFIG_RESULT)->payload[0] == CFG_UNSUPPORTED);
+        CHECK(f.s.closed());
+    }
 }
 
 // 7c. async config: a slow/missing daemon hits the config deadline. The loop is
@@ -513,6 +562,7 @@ int main() {
     RUN(test_config_exact_reaches_ready);
     RUN(test_config_mismatch_rejected);
     RUN(test_config_backend_reports_failure);
+    RUN(test_power_ceiling);
     RUN(test_config_deadline_when_backend_silent);
     RUN(test_backend_failure_during_configuring);
     RUN(test_stale_config_completion_ignored);

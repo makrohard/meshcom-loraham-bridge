@@ -101,8 +101,10 @@ XrSession::Timeouts XrSession::default_timeouts() {
 }
 
 XrSession::XrSession(RadioBackend& backend, const AuthConfig& auth,
-                     const Clock& clock, const Timeouts& to, size_t max_outbox)
-    : backend_(backend), auth_(auth), clock_(clock), to_(to), outbox_(max_outbox) {
+                     const Clock& clock, const Timeouts& to, size_t max_outbox,
+                     int max_power_dbm)
+    : backend_(backend), auth_(auth), clock_(clock), to_(to), max_power_dbm_(max_power_dbm),
+      outbox_(max_outbox) {
     parserReset(parser_);
 }
 
@@ -227,6 +229,16 @@ void XrSession::handle_frame(const extradio::Frame& f) {
                 close(CloseReason::ConfigFailed);
                 return;
             }
+            // The TX power ceiling: the CONFIGURE is the only frame that carries a power, and every power
+            // change on the node opens a new session with a new CONFIGURE, so this one check bounds the RF.
+            if (requested.tx_power_dbm > max_power_dbm_) {
+                logf("[bridge] XR CONFIGURE refused: power %d dBm is above --max-power %d dBm\n",
+                     static_cast<int>(requested.tx_power_dbm), max_power_dbm_);
+                const uint8_t bad[1] = { CFG_UNSUPPORTED };
+                emit(MSG_CONFIG_RESULT, 0, bad, 1);
+                close(CloseReason::ConfigFailed);
+                return;
+            }
             // Begin the asynchronous, deadline-bounded backend configuration. The
             // CONFIG_RESULT is sent later, from on_configure_complete().
             const uint32_t token = backend_.begin_configure(requested);
@@ -277,6 +289,9 @@ void XrSession::on_configure_complete(uint32_t op_token, const ConfigureResult& 
     body[0] = CFG_OK;
     pack_config(body + 1, res.effective);
     if (!emit(MSG_CONFIG_RESULT, 0, body, sizeof(body))) return;
+    // With the refusal line above, the last of the two says whether the client has a radio now.
+    logf("[bridge] XR configured: power %d dBm (--max-power %d dBm)\n",
+         static_cast<int>(res.effective.tx_power_dbm), max_power_dbm_);
     enter_ready();
 }
 

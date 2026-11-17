@@ -10,6 +10,7 @@
 //
 // Invariants enforced here (fail closed on any violation):
 //   * RX and TX are forbidden until an exact CONFIG_RESULT echo (Ready);
+//   * a CONFIGURE above the TX power ceiling never reaches the backend (no radio);
 //   * at most one TX is in flight; a second TX_REQUEST while pending closes;
 //   * a socket write is never RF success — only a backend terminal result (or a
 //     bridge-side TX timeout) produces a TX_RESULT;
@@ -78,8 +79,11 @@ public:
     };
     static Timeouts default_timeouts();
 
+    // max_power_dbm: the TX power ceiling (--max-power). A CONFIGURE asking for more is refused before the
+    // backend sees it (CFG_UNSUPPORTED, then close: ConfigFailed), so the client gets no radio rather than a
+    // clamped one (the firmware requires its exact config echoed back).
     XrSession(RadioBackend& backend, const AuthConfig& auth, const Clock& clock,
-              const Timeouts& to, size_t max_outbox);
+              const Timeouts& to, size_t max_outbox, int max_power_dbm);
 
     // Begin a fresh connection: arm the handshake deadline and start the backend.
     void open();
@@ -132,6 +136,7 @@ private:
     AuthConfig auth_;
     const Clock& clock_;
     Timeouts to_;
+    int max_power_dbm_;
 
     extradio::Parser parser_;
     BoundedBuffer outbox_;

@@ -165,10 +165,20 @@ ctest --test-dir build-asan --output-on-failure
 ## Run
 
 ```bash
-./build/meshcom-loraham-bridge --bind 127.0.0.1 --port 7000
+./build/meshcom-loraham-bridge --bind 127.0.0.1 --port 7000 --max-power 14
 # optional one-way authentication using a password file:
-./build/meshcom-loraham-bridge --port 7000 --password-file /path/to/secret
+./build/meshcom-loraham-bridge --port 7000 --max-power 14 --password-file /path/to/secret
 ```
+
+`--max-power N` (required, an integer 0..20 dBm) is the TX power ceiling. A firmware
+CONFIGURE asking for more power is refused before the radio is configured
+(`CONFIG_RESULT` unsupported, then the session closes, logged as `XR CONFIGURE
+refused: power P dBm is above --max-power N dBm`): that client has no radio, so
+it cannot transmit, until it reconnects at or below the ceiling. The power is
+never clamped, as the firmware requires its exact configuration echoed back.
+Every power change on the node opens a new session with a new CONFIGURE, and no
+other frame carries a power, so this one check bounds what goes on air. Without
+`--max-power` the bridge refuses to start (exit code 2).
 
 With the default `FakeBackend` a connecting firmware completes the handshake,
 reaches the operational state (the fake applies the exact requested
@@ -180,7 +190,7 @@ daemon I/O.
 Start the LoRaHAM daemon (v111 or later) first so its sockets exist, then:
 
 ```bash
-./build/meshcom-loraham-bridge --port 7000 --backend loraham
+./build/meshcom-loraham-bridge --port 7000 --max-power 14 --backend loraham
 ```
 
 The band (433/868) is selected automatically from the frequency the firmware
@@ -202,7 +212,7 @@ refused with exit code 2, as every argument error.
 ### RF log
 
 ```bash
-./build/meshcom-loraham-bridge --backend loraham --rflog on --rflog-path /var/log/rf-meshcom.log
+./build/meshcom-loraham-bridge --max-power 14 --backend loraham --rflog on --rflog-path /var/log/rf-meshcom.log
 ```
 
 One line per frame the radio received or sent, written at the daemon boundary

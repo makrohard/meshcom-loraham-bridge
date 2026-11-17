@@ -12,9 +12,9 @@ namespace mebridge {
 
 XrConnection::XrConnection(int fd, RadioBackend& backend, const AuthConfig& auth,
                            const Clock& clock, const XrSession::Timeouts& to,
-                           size_t max_outbox)
+                           size_t max_outbox, int max_power_dbm)
     : fd_(fd), backend_(backend),
-      session_(backend, auth, clock, to, max_outbox) {
+      session_(backend, auth, clock, to, max_outbox, max_power_dbm) {
     backend_.set_sink(&session_);
     session_.open();
 }

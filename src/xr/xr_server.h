@@ -26,7 +26,7 @@ namespace mebridge {
 class XrServer {
 public:
     XrServer(RadioBackend& backend, AuthConfig auth, const Clock& clock,
-             const XrSession::Timeouts& to, size_t max_outbox);
+             const XrSession::Timeouts& to, size_t max_outbox, int max_power_dbm);
     ~XrServer();
 
     // Bind + listen. port 0 selects an ephemeral port (see bound_port()).
@@ -56,6 +56,7 @@ private:
     const Clock& clock_;
     XrSession::Timeouts to_;
     size_t max_outbox_;
+    int max_power_dbm_;
 
     int listen_fd_ = -1;
     uint16_t bound_port_ = 0;

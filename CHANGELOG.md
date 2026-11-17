@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-17
+
+### Added
+- `--max-power N` (required, an integer 0..20 dBm): the TX power ceiling. A firmware
+  CONFIGURE asking for more is refused before the backend is configured
+  (`CONFIG_RESULT` unsupported, the session closes as `config-failed`), logged as
+  `XR CONFIGURE refused: power P dBm is above --max-power N dBm`. The client gets no
+  radio, never a clamped one, until it reconnects at or below the ceiling. A
+  configured session logs `XR configured: power P dBm (--max-power N dBm)`. The
+  startup line names `max-power=N`.
+
+### Changed
+- The bridge refuses to start without `--max-power` (exit code 2), so a launch that
+  misses it gets no radio rather than no ceiling. Add it to every start command.
+
 ## [0.2.0] - 2026-11-01
 
 ### Added

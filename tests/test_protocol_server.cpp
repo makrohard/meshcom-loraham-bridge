@@ -97,7 +97,7 @@ struct ConnFix {
         CHECK(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
         nb(sv[0]);
         nb(sv[1]);
-        conn = std::make_unique<XrConnection>(sv[0], be, auth, clk, to, 64 * 1024);
+        conn = std::make_unique<XrConnection>(sv[0], be, auth, clk, to, 64 * 1024, 20);
     }
     ~ConnFix() {
         conn.reset();
@@ -144,7 +144,7 @@ std::vector<uint8_t> daemon_tx_result_ok() {
 void test_second_client_does_not_displace() {
     FakeBackend backend;
     SteadyClock clock;
-    XrServer srv(backend, AuthConfig{}, clock, XrSession::default_timeouts(), 64 * 1024);
+    XrServer srv(backend, AuthConfig{}, clock, XrSession::default_timeouts(), 64 * 1024, 20);
     std::string err;
     CHECK(srv.listen("127.0.0.1", 0, err));
     const uint16_t port = srv.bound_port();
@@ -190,7 +190,7 @@ void test_slow_client_bounded_output() {
     ManualClock clk{1000};
     AuthConfig auth;  // open
     const size_t kSmallOutbox = 100;  // room for handshake, not a flood of RX
-    XrSession s(be, auth, clk, XrSession::default_timeouts(), kSmallOutbox);
+    XrSession s(be, auth, clk, XrSession::default_timeouts(), kSmallOutbox, 20);
     be.set_sink(&s);
     s.open();
 

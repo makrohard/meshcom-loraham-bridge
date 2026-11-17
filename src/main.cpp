@@ -44,7 +44,7 @@ void usage(const char* argv0) {
     std::fprintf(stderr,
         "Usage: %s [--bind ADDR] [--port N] [--password-file PATH] [--backend NAME]\n"
         "          [--rflog on|off --rflog-path PATH]\n"
-        "          [--data-socket PATH] [--conf-socket PATH]\n"
+        "          [--data-socket PATH] [--conf-socket PATH] --max-power N\n"
         "  --bind ADDR           bind address (default 127.0.0.1)\n"
         "  --port N              TCP port (default 7000; 0 = ephemeral)\n"
         "  --password-file PATH  enable one-way HMAC auth using the file contents\n"
@@ -58,6 +58,8 @@ void usage(const char* argv0) {
         "  --conf-socket PATH    with --backend loraham: the radio's CONF socket\n"
         "                        (both together; the pair serves either band;\n"
         "                        without them the per-band default sockets are used)\n"
+        "  --max-power N         required: the TX power ceiling, dBm (an integer 0..20);\n"
+        "                        a client CONFIGURE asking for more gets no radio\n"
         "  --ping-interval-ms N  keepalive PING interval, ms (default 15000)\n"
         "  --pong-timeout-ms N   max wait for a PONG after a PING, ms (default 10000)\n"
         "                        (raise both for slow/emulated guests, e.g. QEMU/TCG,\n"
@@ -80,6 +82,7 @@ int main(int argc, char** argv) {
     std::string data_socket;
     std::string conf_socket;
     XrSession::Timeouts timeouts = XrSession::default_timeouts();
+    int max_power = -1;   // required: no ceiling given -> refuse to start
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -140,6 +143,18 @@ int main(int argc, char** argv) {
                 return 2;
             }
             (a == "--data-socket" ? data_socket : conf_socket) = v;
+        } else if (a == "--max-power") {
+            // Strict like --port: an integer 0..20 dBm (the codec's and the daemon's POWER range), nothing else.
+            const char* v = next("--max-power");
+            char* end = nullptr;
+            errno = 0;
+            const long p = std::strtol(v, &end, 10);
+            if (!(v[0] >= '0' && v[0] <= '9') || *end != '\0' || errno != 0 || p > 20) {
+                logf("error: --max-power must be an integer in [0, 20] (dBm)\n");
+                usage(argv[0]);
+                return 2;
+            }
+            max_power = static_cast<int>(p);
         } else if (a == "--ping-interval-ms") {
             timeouts.ping_interval_ms = next_ms("--ping-interval-ms");
         } else if (a == "--pong-timeout-ms") {
@@ -167,6 +182,12 @@ int main(int argc, char** argv) {
     }
     if ((!data_socket.empty() || !conf_socket.empty()) && backend_name != "loraham") {
         logf("error: --data-socket/--conf-socket need --backend loraham\n");
+        return 2;
+    }
+
+    // Fail closed: a launch without a ceiling gets no bridge, so no radio, never an uncapped one.
+    if (max_power < 0) {
+        logf("error: --max-power is required (the TX power ceiling, dBm)\n");
         return 2;
     }
 
@@ -213,7 +234,7 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    XrServer server(*backend, std::move(auth), clock, timeouts, kDefaultMaxOutbox);
+    XrServer server(*backend, std::move(auth), clock, timeouts, kDefaultMaxOutbox, max_power);
 
     std::string err;
     if (!server.listen(bind_addr, port, err)) {
@@ -221,9 +242,9 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    logf("meshcom-loraham-bridge: listening on %s:%u, auth=%s, backend=%s, rflog=%s\n",
+    logf("meshcom-loraham-bridge: listening on %s:%u, auth=%s, backend=%s, max-power=%d, rflog=%s\n",
          bind_addr.c_str(), static_cast<unsigned>(server.bound_port()),
-         password_file.empty() ? "open" : "password", backend_name.c_str(),
+         password_file.empty() ? "open" : "password", backend_name.c_str(), max_power,
          rflog::active() ? rflog_path.c_str() : "off");
 
     server.run(g_stop);
