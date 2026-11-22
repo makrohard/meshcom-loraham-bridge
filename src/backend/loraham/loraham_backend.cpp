@@ -21,9 +21,11 @@ bool starts_with(const std::string& s, const char* p) {
     return s.compare(0, std::strlen(p), p) == 0;
 }
 // Documented unsolicited daemon CONF broadcasts (see daemon_monitoring.cpp):
-// TX state, CAD state, and live RSSI. These are ignored on the CONF stream.
+// TX state, CAD state, live RSSI, and radio state RADIO= (daemon 1.6.0+, see
+// conf-protocol.md). These are ignored on the CONF stream.
 bool is_broadcast_line(const std::string& s) {
-    return starts_with(s, "TX=") || starts_with(s, "CAD=") || starts_with(s, "RSSI=");
+    return starts_with(s, "TX=") || starts_with(s, "CAD=") || starts_with(s, "RSSI=") ||
+           starts_with(s, "RADIO=");
 }
 }  // namespace
 

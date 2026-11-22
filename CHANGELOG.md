@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-22
+
+### Fixed
+- A daemon `RADIO=` broadcast (daemon 1.6.0+) on the CONF stream is ignored like `TX=`/`CAD=`/`RSSI=`; it no longer drops the daemon link.
+
 ## [0.3.0] - 2026-11-17
 
 ### Added

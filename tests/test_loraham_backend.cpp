@@ -288,6 +288,40 @@ void test_configure_v111_silent_sets() {
     CHECK(be.ready());
 }
 
+// Regression (daemon 1.6.0+): the daemon broadcasts the radio state as a
+// "RADIO=..." line on the CONF stream. Like TX=/CAD=/RSSI= it is ignored while
+// awaiting the STATUS reply: configure still succeeds.
+void test_radio_broadcast_before_status_ignored() {
+    FakeDaemon ft; RecSink sink; ManualClock clk;
+    ft.status_prefix = "RADIO=UNPLUGGED\n";
+    LorahamBackend be(ft, clk);
+    be.set_sink(&sink);
+    be.start();
+    auto r = configure_now(be, sink, default_config());
+    CHECK(r.applied);
+    CHECK(be.ready());
+}
+
+// ...and between operations after Ready: still running, no disconnect.
+void test_radio_broadcast_between_operations_ignored() {
+    FakeDaemon ft; RecSink sink; ManualClock clk;
+    LorahamBackend be(ft, clk);
+    be.set_sink(&sink);
+    be.start();
+    CHECK(configure_now(be, sink, default_config()).applied);
+    ft.conf_in += "RADIO=UNPLUGGED\n";
+    be.poll();
+    CHECK(ft.conf_in.empty());   // the line was read
+    CHECK(be.ready());
+    CHECK(ft.connected);
+    const uint8_t rf[2] = {0x01, 0x02};
+    uint8_t frame[64];
+    size_t n = loraham::encode_rx_packet(frame, sizeof(frame), -9000, 125, rf, 2);
+    ft.push_data(frame, n);
+    be.poll();
+    CHECK(sink.rx.size() == 1);  // the link still forwards
+}
+
 void test_rx_forwarding() {
     FakeDaemon ft; RecSink sink; ManualClock clk;
     LorahamBackend be(ft, clk);
@@ -730,6 +764,8 @@ int main() {
     RUN(test_configure_consumes_v112_set_acks);
     RUN(test_configure_fails_on_set_err);
     RUN(test_configure_v111_silent_sets);
+    RUN(test_radio_broadcast_before_status_ignored);
+    RUN(test_radio_broadcast_between_operations_ignored);
     RUN(test_rx_forwarding);
     RUN(test_rx_forwarding_fragmented);
     RUN(test_tx_success_and_one_in_flight);
