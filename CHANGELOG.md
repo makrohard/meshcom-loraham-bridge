@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-24
+
+### Fixed
+- The TX ceiling of an in-flight TX now covers the daemon's MANAGED channel wait (CADWAIT/CADPOLL/CADSYM from the
+  configure `GET STATUS` reply, defaults 1500/50/4) plus the frame's time on air plus 1 s, never less than 10 s.
+  At SF12/BW125 a frame could take longer than the fixed 10 s, so the session closed as `tx-timeout-uncertain` on
+  a free channel. The default SF11/BW250 stays at 10 s.
+
 ## [0.3.1] - 2026-11-22
 
 ### Fixed
