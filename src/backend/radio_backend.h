@@ -109,6 +109,11 @@ public:
     // RF success — the terminal result arrives later via on_tx_complete().
     virtual bool submit_tx(const uint8_t* data, size_t len) = 0;
 
+    // Worst-case time (ms) from submit_tx() of a `len`-byte packet to its
+    // terminal result under the current configuration. The session never waits
+    // less than its own TX ceiling; this lets a slow config wait longer.
+    virtual uint64_t tx_ceiling_ms(size_t len) const = 0;
+
     // The XR session is abandoning the in-flight TX because its bridge-side
     // deadline expired before any terminal result arrived. The backend MUST NOT
     // treat the packet as a known success or failure: it may still be queued or

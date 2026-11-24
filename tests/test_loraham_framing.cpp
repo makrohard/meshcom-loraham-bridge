@@ -132,6 +132,21 @@ void test_status_line_ready() {
     CHECK(!status_line_radio_ready("STATUS TX=0"));
 }
 
+void test_status_line_uint() {
+    const std::string st = "STATUS RADIO=READY CADWAIT=3000 CADIDLE=250 CADPOLL=100 CADSYM=8 SF=12";
+    CHECK(status_line_uint(st, "CADWAIT", 1500) == 3000u);
+    CHECK(status_line_uint(st, "CADPOLL", 50) == 100u);
+    CHECK(status_line_uint(st, "CADSYM", 4) == 8u);
+    CHECK(status_line_uint("STATUS RADIO=READY CADWAIT=3000", "CADPOLL", 50) == 50u);  // missing
+    CHECK(status_line_uint("STATUS CADSYM=AUTO", "CADSYM", 4) == 4u);
+    CHECK(status_line_uint("STATUS CADSYM=-", "CADSYM", 4) == 4u);
+    CHECK(status_line_uint("STATUS CADSYM=", "CADSYM", 4) == 4u);
+    CHECK(status_line_uint("STATUS CADWAIT=12x", "CADWAIT", 1500) == 1500u);
+    CHECK(status_line_uint("STATUS CADWAIT=-5", "CADWAIT", 1500) == 1500u);
+    CHECK(status_line_uint("STATUS CADWAIT=99999999999", "CADWAIT", 1500) == 1500u);  // too long
+    CHECK(status_line_uint("STATUS XCADWAIT=7 CADWAIT=9", "CADWAIT", 1500) == 9u);  // whole key
+}
+
 }  // namespace
 
 int main() {
@@ -142,6 +157,7 @@ int main() {
     RUN(test_parser_fail_closed);
     RUN(test_tx_status_mapping);
     RUN(test_status_line_ready);
+    RUN(test_status_line_uint);
     std::fprintf(stderr, "test_loraham_framing: all passed\n");
     return 0;
 }

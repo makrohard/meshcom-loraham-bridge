@@ -4,6 +4,7 @@
 
 #include "xr/xr_session.h"
 
+#include <algorithm>
 #include <cstring>
 
 #include "util/log.h"
@@ -330,7 +331,9 @@ void XrSession::handle_ready_frame(const extradio::Frame& f) {
                 return;
             }
             tx_in_flight_ = true;
-            tx_deadline_at_ = clock_.now_ms() + to_.tx_ms;
+            // The ceiling covers the daemon's channel wait plus the airtime of
+            // this frame at the configured LoRa params, never less than tx_ms.
+            tx_deadline_at_ = clock_.now_ms() + std::max(to_.tx_ms, backend_.tx_ceiling_ms(f.len));
             return;
 
         case MSG_HELLO:

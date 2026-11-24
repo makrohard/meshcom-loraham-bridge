@@ -64,6 +64,7 @@
 #include <string>
 #include <vector>
 
+#include "backend/loraham/loraham_airtime.h"
 #include "backend/loraham/loraham_framing.h"
 #include "backend/loraham/loraham_transport.h"
 #include "backend/radio_backend.h"
@@ -88,6 +89,7 @@ public:
     bool ready() const override { return started_ && state_ == State::Ready; }
     uint64_t next_deadline_ms() const override;
     bool submit_tx(const uint8_t* data, size_t len) override;
+    uint64_t tx_ceiling_ms(size_t len) const override;
     void abandon_pending_tx() override;
     void poll() override;
 
@@ -158,6 +160,10 @@ private:
     size_t conf_out_off_ = 0;
     bool awaiting_status_ = false;     // GET STATUS sent; one STATUS reply expected
     std::string conf_line_;           // bounded CONF line reassembly
+    // Daemon MANAGED channel-access settings from the configure STATUS reply.
+    uint32_t cad_wait_ms_ = loraham::kDefaultCadWaitMs;
+    uint32_t cad_poll_ms_ = loraham::kDefaultCadPollMs;
+    uint32_t cad_symbols_ = loraham::kDefaultCadSymbols;
 
     // recovery
     uint64_t drain_deadline_at_ = 0;

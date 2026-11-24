@@ -152,6 +152,10 @@ void LorahamBackend::config_fail(const char* why) {
 
 // --- TX --------------------------------------------------------------------
 
+uint64_t LorahamBackend::tx_ceiling_ms(size_t len) const {
+    return loraham::tx_ceiling_ms(pending_cfg_, len, cad_wait_ms_, cad_poll_ms_, cad_symbols_);
+}
+
 LorahamBackend::TxFlush LorahamBackend::pump_tx_write() {
     while (tx_out_off_ < tx_out_.size()) {
         int w = transport_.data_send_some(tx_out_.data() + tx_out_off_,
@@ -408,6 +412,9 @@ bool LorahamBackend::pump_conf(bool awaiting_status, bool* got_status, bool* sta
                 if (!awaiting_status) return false;  // unsolicited STATUS: fatal
                 *got_status = true;
                 *status_ready = status_line_radio_ready(line);
+                cad_wait_ms_ = status_line_uint(line, "CADWAIT", kDefaultCadWaitMs);
+                cad_poll_ms_ = status_line_uint(line, "CADPOLL", kDefaultCadPollMs);
+                cad_symbols_ = status_line_uint(line, "CADSYM", kDefaultCadSymbols);
                 return true;  // exactly one status accepted; keep any trailing bytes
             }
             // Any other non-broadcast reply-like line is fatal (incl. an "OK",

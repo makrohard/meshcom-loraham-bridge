@@ -67,6 +67,11 @@ TxOutcome map_tx_status(uint8_t status);
 // True if a daemon "GET STATUS" response line reports RADIO=READY.
 bool status_line_radio_ready(const std::string& line);
 
+// The unsigned decimal value of KEY=<digits> in a "GET STATUS" line (e.g. KEY
+// "CADWAIT"), or `dflt` when the key is missing or its value is not plain digits
+// (e.g. AUTO or -).
+uint32_t status_line_uint(const std::string& line, const char* key, uint32_t dflt);
+
 }  // namespace loraham
 }  // namespace mebridge
 

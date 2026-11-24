@@ -11,6 +11,8 @@
 
 #include "auth/hmac_auth.h"
 #include "backend/fake_backend.h"
+#include "backend/loraham/loraham_backend.h"
+#include "fake_daemon.h"
 #include "test_helpers.h"
 #include "util/clock.h"
 #include "xr/xr_session.h"
@@ -449,6 +451,85 @@ void test_tx_deadline_abandons_without_timeout() {
     CHECK(!f.be.tx_in_flight());                       // backend was told to abandon
 }
 
+// F-D2-2: the TX ceiling through the real LoRaHAM backend (fake daemon). The
+// ceiling is the daemon's MANAGED channel wait + this frame's airtime + 1 s,
+// never below the session's tx_ms (10 s).
+struct LoraFix {
+    testutil::FakeDaemon ft;
+    ManualClock clk{1000};
+    LorahamBackend be{ft, clk};
+    AuthConfig auth;  // open mode
+    XrSession s{be, auth, clk, XrSession::default_timeouts(), kBigOutbox, 20};
+    LoraFix() { be.set_sink(&s); be.start(); s.open(); }
+    void feed(const std::vector<uint8_t>& bytes) { s.feed(bytes.data(), bytes.size()); }
+};
+
+// Bring the session to Ready with `cfg`, submit a `len`-byte TX, and return the
+// submit time. The daemon never answers the TX.
+uint64_t lora_ready_and_submit(LoraFix& f, const RadioConfig& cfg, uint16_t len) {
+    f.feed(build_hello());
+    drain(f.s);
+    f.feed(build_configure(cfg));
+    for (int i = 0; i < 80 && !f.s.ready(); ++i) f.be.poll();
+    CHECK(f.s.ready());
+    drain(f.s);
+    std::vector<uint8_t> data(len, 0x5A);
+    f.feed(build_tx_request(77, data.data(), len));
+    CHECK(f.s.tx_in_flight());
+    return f.clk.now_ms();
+}
+
+// Advance to `at` (absolute ms), run the backend and the session once.
+void lora_step_to(LoraFix& f, uint64_t at) {
+    f.clk.advance(at - f.clk.now_ms());
+    f.be.poll();
+    f.s.tick();
+}
+
+// SF12/BW125 (CR 4/5, LDRO 1, CRC, preamble 8), 100 B, daemon CAD defaults:
+// 8382.2 + 3940.3 + 1000 = 13322.5 -> 13323 ms. The old fixed 10 s closed at 10 s.
+void test_tx_ceiling_sf12_waits_for_airtime() {
+    LoraFix f;
+    const uint64_t t0 = lora_ready_and_submit(f, default_config(), 100);
+    lora_step_to(f, t0 + 10500);
+    CHECK(!f.s.closed());
+    CHECK(f.s.tx_in_flight());
+    lora_step_to(f, t0 + 13322);
+    CHECK(!f.s.closed());
+    lora_step_to(f, t0 + 13323);
+    CHECK(f.s.closed());
+    CHECK(f.s.close_reason() == CloseReason::TxTimeoutUncertain);
+    CHECK(count_type(drain(f.s), MSG_TX_RESULT) == 0);  // never a fabricated result
+}
+
+// The daemon's CADWAIT/CADPOLL/CADSYM from the configure STATUS reply are used:
+// 30 x (8 x 32.768 + 100) + 29 x 100 + 3940.3 + 1000 = 18704.6 -> 18705 ms.
+void test_tx_ceiling_uses_status_cad_settings() {
+    LoraFix f;
+    f.ft.status_line = "STATUS RADIO=READY TX=0 CAD=0 TXMODE=MANAGED CADWAIT=3000 CADPOLL=100 CADSYM=8";
+    const uint64_t t0 = lora_ready_and_submit(f, default_config(), 100);
+    lora_step_to(f, t0 + 18704);
+    CHECK(!f.s.closed());
+    lora_step_to(f, t0 + 18705);
+    CHECK(f.s.closed());
+    CHECK(f.s.close_reason() == CloseReason::TxTimeoutUncertain);
+}
+
+// A fast config (SF7/BW500, 10 B: well under 10 s) keeps the 10 s floor.
+void test_tx_ceiling_floor_for_fast_config() {
+    LoraFix f;
+    RadioConfig c = default_config();
+    c.sf = 7;
+    c.bw_hz = 500000u;
+    c.ldro = 0;
+    const uint64_t t0 = lora_ready_and_submit(f, c, 10);
+    lora_step_to(f, t0 + XrSession::default_timeouts().tx_ms - 1);
+    CHECK(!f.s.closed());
+    lora_step_to(f, t0 + XrSession::default_timeouts().tx_ms);
+    CHECK(f.s.closed());
+    CHECK(f.s.close_reason() == CloseReason::TxTimeoutUncertain);
+}
+
 // 14. stale backend completion is ignored
 void test_stale_completion_ignored() {
     Fix f;
@@ -578,6 +659,9 @@ int main() {
     RUN(test_late_pong_warns);
     RUN(test_fast_pong_no_warn);
     RUN(test_unsolicited_pong);
+    RUN(test_tx_ceiling_sf12_waits_for_airtime);
+    RUN(test_tx_ceiling_uses_status_cad_settings);
+    RUN(test_tx_ceiling_floor_for_fast_config);
     std::fprintf(stderr, "test_xr_session: all passed\n");
     return 0;
 }

@@ -48,6 +48,7 @@ target_include_directories(external_radio_protocol PUBLIC
 add_library(bridge_core STATIC
   src/auth/hmac_auth.cpp
   src/backend/fake_backend.cpp
+  src/backend/loraham/loraham_airtime.cpp
   src/backend/loraham/loraham_config.cpp
   src/backend/loraham/loraham_framing.cpp
   src/backend/loraham/loraham_posix_transport.cpp
@@ -78,6 +79,7 @@ endfunction()
 add_bridge_test(test_protocol_server)
 add_bridge_test(test_xr_session)
 add_bridge_test(test_fake_backend)
+add_bridge_test(test_loraham_airtime)
 add_bridge_test(test_loraham_config)
 add_bridge_test(test_loraham_framing)
 add_bridge_test(test_loraham_backend)

@@ -140,5 +140,19 @@ bool status_line_radio_ready(const std::string& line) {
     return value == "READY";
 }
 
+uint32_t status_line_uint(const std::string& line, const char* key, uint32_t dflt) {
+    const std::string k = std::string(" ") + key + "=";
+    size_t pos = line.find(k);
+    if (pos == std::string::npos) return dflt;
+    size_t v = pos + k.size();
+    size_t end = line.find_first_of(" \t\r\n", v);
+    std::string value = line.substr(v, end == std::string::npos ? std::string::npos : end - v);
+    if (value.empty() || value.size() > 9) return dflt;  // 9 digits fit in uint32
+    for (char c : value) {
+        if (c < '0' || c > '9') return dflt;
+    }
+    return static_cast<uint32_t>(std::stoul(value));
+}
+
 }  // namespace loraham
 }  // namespace mebridge

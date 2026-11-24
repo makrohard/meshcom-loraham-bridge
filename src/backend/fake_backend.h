@@ -56,6 +56,8 @@ public:
     bool ready() const override { return started_ && configured_; }
     uint64_t next_deadline_ms() const override { return UINT64_MAX; }
     bool submit_tx(const uint8_t* data, size_t len) override;
+    // No airtime model: the session's own TX ceiling applies.
+    uint64_t tx_ceiling_ms(size_t) const override { return 0; }
     // The fake has no real downstream owner, so abandoning simply forgets the
     // in-flight TX (no draining/recovery is meaningful here).
     void abandon_pending_tx() override { tx_pending_ = false; pending_tx_result_.reset(); }
